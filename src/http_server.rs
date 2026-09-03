@@ -30,141 +30,147 @@ pub async fn run_http_server(
         let token_ref = auth_token.clone();
 
         tokio::spawn(async move {
-            let mut buffer = Vec::new();
-            let mut temp_buf = [0u8; 4096];
-            let header_end;
+            let handle_conn = async {
+                let mut buffer = Vec::new();
+                let mut temp_buf = [0u8; 4096];
+                let header_end;
 
-            // 1. Read until headers are fully received (\r\n\r\n)
-            loop {
-                let n = match socket.read(&mut temp_buf).await {
-                    Ok(n) if n > 0 => n,
-                    _ => return,
-                };
-                buffer.extend_from_slice(&temp_buf[..n]);
+                // 1. Read until headers are fully received (\r\n\r\n)
+                loop {
+                    let n = match socket.read(&mut temp_buf).await {
+                        Ok(n) if n > 0 => n,
+                        _ => return,
+                    };
+                    buffer.extend_from_slice(&temp_buf[..n]);
 
-                // Limit maximum header size to 32KB to prevent memory exhaustion DoS
-                if buffer.len() > 32 * 1024 {
+                    // Limit maximum header size to 32KB to prevent memory exhaustion DoS
+                    if buffer.len() > 32 * 1024 {
+                        return;
+                    }
+
+                    if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = pos + 4;
+                        break;
+                    }
+                }
+
+                let headers_str = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                let lines: Vec<&str> = headers_str.split("\r\n").collect();
+                if lines.is_empty() {
                     return;
                 }
 
-                if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-                    header_end = pos + 4;
-                    break;
+                let first_line = lines[0];
+                let parts: Vec<&str> = first_line.split_whitespace().collect();
+                if parts.len() < 2 {
+                    return;
                 }
-            }
 
-            let headers_str = String::from_utf8_lossy(&buffer[..header_end]).to_string();
-            let lines: Vec<&str> = headers_str.split("\r\n").collect();
-            if lines.is_empty() {
-                return;
-            }
+                let method = parts[0];
+                let raw_path = parts[1];
+                let path = raw_path.split('?').next().unwrap_or(raw_path);
 
-            let first_line = lines[0];
-            let parts: Vec<&str> = first_line.split_whitespace().collect();
-            if parts.len() < 2 {
-                return;
-            }
-
-            let method = parts[0];
-            let path = parts[1];
-
-            // 2. Parse Content-Length for POST requests
-            let mut content_length = 0;
-            for line in &lines {
-                if line.to_lowercase().starts_with("content-length:") {
-                    if let Ok(len) = line[15..].trim().parse::<usize>() {
-                        content_length = len;
-                    }
-                }
-            }
-
-            // Cap body at 10MB to prevent DoS
-            if content_length > 10 * 1024 * 1024 {
-                let resp = "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: 20\r\n\r\nPayload exceeds 10MB";
-                let _ = socket.write_all(resp.as_bytes()).await;
-                return;
-            }
-
-            // 3. Read remaining body bytes if needed
-            while buffer.len() - header_end < content_length {
-                let n = match socket.read(&mut temp_buf).await {
-                    Ok(n) if n > 0 => n,
-                    _ => break,
-                };
-                buffer.extend_from_slice(&temp_buf[..n]);
-            }
-
-            // Bearer token authentication check if enabled
-            if let Some(expected_token) = &token_ref {
-                let mut authorized = false;
+                // 2. Parse Content-Length for POST requests
+                let mut content_length = 0;
                 for line in &lines {
-                    if line.to_lowercase().starts_with("authorization: bearer ") {
-                        let token = &line[22..].trim();
-                        if token == expected_token {
-                            authorized = true;
-                            break;
+                    if line.to_lowercase().starts_with("content-length:") {
+                        if let Ok(len) = line[15..].trim().parse::<usize>() {
+                            content_length = len;
                         }
                     }
                 }
 
-                // Exclude GET / (dashboard) and /health from blocking to allow healthchecks
-                if !authorized && path != "/health" && path != "/" {
-                    let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\n\r\nInvalid or missing Bearer token";
+                // Cap body at 10MB to prevent DoS
+                if content_length > 10 * 1024 * 1024 {
+                    let resp = "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: 20\r\n\r\nPayload exceeds 10MB";
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
                 }
-            }
 
-            if method == "GET" && path == "/" {
-                // Serve Embedded Live Flight Recorder Dashboard
-                let dashboard_html = render_dashboard_html(&server_ref);
-                let response = format!(
+                // 3. Read remaining body bytes if needed
+                while buffer.len() - header_end < content_length {
+                    let n = match socket.read(&mut temp_buf).await {
+                        Ok(n) if n > 0 => n,
+                        _ => break,
+                    };
+                    buffer.extend_from_slice(&temp_buf[..n]);
+                }
+
+                // Bearer token authentication check if enabled
+                if let Some(expected_token) = &token_ref {
+                    let mut authorized = false;
+                    for line in &lines {
+                        if line.to_lowercase().starts_with("authorization: bearer ") {
+                            let token = &line[22..].trim();
+                            if token == expected_token {
+                                authorized = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Exclude GET / (dashboard) and /health from blocking to allow healthchecks
+                    if !authorized && path != "/health" && path != "/" {
+                        let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\n\r\nInvalid or missing Bearer token";
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                }
+
+                if method == "GET" && path == "/" {
+                    // Serve Embedded Live Flight Recorder Dashboard
+                    let dashboard_html = render_dashboard_html(&server_ref);
+                    let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     dashboard_html.len(),
                     dashboard_html
                 );
-                let _ = socket.write_all(response.as_bytes()).await;
-            } else if method == "GET" && path == "/health" {
-                let status =
-                    "{\"status\":\"healthy\",\"server\":\"intermcp\",\"version\":\"0.1.0\"}";
-                let response = format!(
+                    let _ = socket.write_all(response.as_bytes()).await;
+                } else if method == "GET" && path == "/health" {
+                    let status =
+                        "{\"status\":\"healthy\",\"server\":\"intermcp\",\"version\":\"0.1.0\"}";
+                    let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     status.len(),
                     status
                 );
-                let _ = socket.write_all(response.as_bytes()).await;
-            } else if method == "POST" && (path == "/mcp" || path == "/") {
-                let body_slice = if buffer.len() >= header_end + content_length {
-                    &buffer[header_end..header_end + content_length]
-                } else if buffer.len() > header_end {
-                    &buffer[header_end..]
-                } else {
-                    &[]
-                };
-                let body = String::from_utf8_lossy(body_slice);
+                    let _ = socket.write_all(response.as_bytes()).await;
+                } else if method == "POST" && (path == "/mcp" || path == "/") {
+                    let body_slice = if buffer.len() >= header_end + content_length {
+                        &buffer[header_end..header_end + content_length]
+                    } else if buffer.len() > header_end {
+                        &buffer[header_end..]
+                    } else {
+                        &[]
+                    };
+                    let body = String::from_utf8_lossy(body_slice);
 
-                let response_body = server_ref.handle_raw_message(&body).await.unwrap_or_else(|| {
+                    let response_body = server_ref.handle_raw_message(&body).await.unwrap_or_else(|| {
                     "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}".to_string()
                 });
 
-                let response = format!(
+                    let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     response_body.len(),
                     response_body
                 );
-                let _ = socket.write_all(response.as_bytes()).await;
-            } else if method == "OPTIONS" {
-                let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n";
-                let _ = socket.write_all(response.as_bytes()).await;
-            } else {
-                let not_found = "404 Not Found";
-                let response = format!(
-                    "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    not_found.len(),
-                    not_found
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-            }
+                    let _ = socket.write_all(response.as_bytes()).await;
+                } else if method == "OPTIONS" {
+                    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n";
+                    let _ = socket.write_all(response.as_bytes()).await;
+                } else {
+                    let not_found = "404 Not Found";
+                    let response = format!(
+                        "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        not_found.len(),
+                        not_found
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            };
+
+            // 15-second strict timeout on entire HTTP request/response cycle to protect against Slowloris
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(15), handle_conn).await;
         });
     }
 }

@@ -11,7 +11,7 @@ pub struct GuardrailPolicy {
     max_session_chars: Option<usize>,
     cumulative_chars: RwLock<usize>,
     history: RwLock<HashMap<String, Vec<Instant>>>,
-    recent_signatures: RwLock<HashMap<String, u32>>,
+    last_signature: RwLock<Option<(String, u32)>>,
 }
 
 impl GuardrailPolicy {
@@ -22,7 +22,7 @@ impl GuardrailPolicy {
             max_session_chars: None,
             cumulative_chars: RwLock::new(0),
             history: RwLock::new(HashMap::new()),
-            recent_signatures: RwLock::new(HashMap::new()),
+            last_signature: RwLock::new(None),
         }
     }
 
@@ -78,27 +78,30 @@ impl GuardrailPolicy {
             timestamps.push(now);
         }
 
-        // 2. Infinite loop detection (repeated identical signatures)
+        // 2. Infinite consecutive loop detection
         let signature = format!("{}:{}", tool_name, arguments);
-        if let Ok(mut sigs) = self.recent_signatures.write() {
-            let count = sigs.entry(signature.clone()).or_insert(0);
-            *count += 1;
+        if let Ok(mut last) = self.last_signature.write() {
+            let count = match &*last {
+                Some((prev_sig, c)) if prev_sig == &signature => c + 1,
+                _ => 1,
+            };
 
-            if *count > self.loop_detection_threshold {
+            if count > self.loop_detection_threshold {
                 return Err(FastMcpError::ToolExecution(format!(
                     "🛑 InterMCP Loop Breaker: Infinite loop detected! Tool '{}' was invoked with identical parameters {} times consecutively. Execution halted.",
                     tool_name, count
                 )));
             }
+
+            *last = Some((signature, count));
         }
 
         Ok(())
     }
 
-    pub fn reset_signature(&self, tool_name: &str, arguments: &serde_json::Value) {
-        let signature = format!("{}:{}", tool_name, arguments);
-        if let Ok(mut sigs) = self.recent_signatures.write() {
-            sigs.remove(&signature);
+    pub fn reset_signature(&self, _tool_name: &str, _arguments: &serde_json::Value) {
+        if let Ok(mut last) = self.last_signature.write() {
+            *last = None;
         }
     }
 }

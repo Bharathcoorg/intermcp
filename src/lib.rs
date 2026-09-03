@@ -398,4 +398,81 @@ mod tests {
             panic!("Expected redacted text output");
         }
     }
+
+    #[test]
+    fn test_cache_capacity_eviction() {
+        let cache = ToolCache::new(Duration::from_secs(300));
+        // Insert 1005 items; cache capacity must stay bounded at 1000 items
+        for i in 0..1005 {
+            let key = format!("val_{}", i);
+            cache.set("tool", &json!({ "i": key }), json!({ "res": i }), None);
+        }
+        let (_, _, count) = cache.stats();
+        assert!(count <= 1000);
+    }
+
+    #[tokio::test]
+    async fn test_guardrail_consecutive_loop_reset() {
+        // Threshold: 3 consecutive calls
+        let server = create_default_server().with_guardrails(100, 3);
+
+        let call_a = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "system_info", "arguments": {} }
+        })
+        .to_string();
+
+        let call_b = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "git_status", "arguments": {} }
+        })
+        .to_string();
+
+        // Alternating calls A, B, A, B should NOT trigger loop breaker
+        for _ in 0..5 {
+            let _ = server.handle_raw_message(&call_a).await;
+            let _ = server.handle_raw_message(&call_b).await;
+        }
+
+        // 4 consecutive calls to A MUST trigger loop breaker on call 4
+        let _ = server.handle_raw_message(&call_a).await;
+        let _ = server.handle_raw_message(&call_a).await;
+        let _ = server.handle_raw_message(&call_a).await;
+        let resp4_str = server.handle_raw_message(&call_a).await.unwrap();
+        let resp4: JsonRpcResponse = serde_json::from_str(&resp4_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp4.result.unwrap()).unwrap();
+        assert!(tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("InterMCP Loop Breaker"));
+        }
+    }
+
+    #[test]
+    fn test_hub_config_with_env() {
+        let json_data = json!({
+            "servers": [
+                {
+                    "name": "github",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "env": {
+                        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_12345"
+                    }
+                }
+            ]
+        });
+
+        let hub_cfg: HubConfig = serde_json::from_value(json_data).unwrap();
+        assert_eq!(
+            hub_cfg.servers[0]
+                .env
+                .get("GITHUB_PERSONAL_ACCESS_TOKEN")
+                .unwrap(),
+            "ghp_12345"
+        );
+    }
 }

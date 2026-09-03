@@ -59,9 +59,20 @@ impl ToolCache {
 
         if let Ok(mut write_guard) = self.entries.write() {
             // Prune expired entries if cache grows large
-            if write_guard.len() > 1000 {
+            if write_guard.len() >= 1000 {
                 let now = Instant::now();
                 write_guard.retain(|_, v| v.expires_at > now);
+
+                // If still at or over capacity, evict the earliest-expiring entry
+                if write_guard.len() >= 1000 {
+                    if let Some((earliest_key, _)) = write_guard
+                        .iter()
+                        .min_by_key(|(_, v)| v.expires_at)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                    {
+                        write_guard.remove(&earliest_key);
+                    }
+                }
             }
 
             write_guard.insert(key, CacheEntry { result, expires_at });

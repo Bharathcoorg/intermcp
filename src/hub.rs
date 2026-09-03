@@ -16,6 +16,8 @@ pub struct UpstreamServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +38,7 @@ impl UpstreamProcess {
     async fn spawn(config: &UpstreamServerConfig) -> Result<Self, FastMcpError> {
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
+            .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());

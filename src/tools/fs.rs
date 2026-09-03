@@ -241,6 +241,38 @@ fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize) {
             if p.is_dir() {
                 search_dir(&p, query, matches, depth + 1);
             } else if p.is_file() {
+                // Skip binary files by common file extension
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_lowercase();
+                    if matches!(
+                        ext_lower.as_str(),
+                        "png"
+                            | "jpg"
+                            | "jpeg"
+                            | "gif"
+                            | "ico"
+                            | "webp"
+                            | "pdf"
+                            | "zip"
+                            | "tar"
+                            | "gz"
+                            | "exe"
+                            | "dll"
+                            | "so"
+                            | "dylib"
+                            | "wasm"
+                            | "bin"
+                            | "db"
+                            | "sqlite"
+                            | "woff"
+                            | "woff2"
+                            | "ttf"
+                            | "eot"
+                    ) {
+                        continue;
+                    }
+                }
+
                 // Skip files larger than 2MB to prevent memory exhaustion and UI lag
                 if let Ok(meta) = entry.metadata() {
                     if meta.len() > 2 * 1024 * 1024 {
