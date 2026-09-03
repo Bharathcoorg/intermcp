@@ -275,4 +275,127 @@ mod tests {
         // git_status is not cacheable, so hits must remain 0!
         assert_eq!(hits, 0);
     }
+
+    #[tokio::test]
+    async fn test_safefs_secret_shield() {
+        let sandbox = SandboxPolicy::new(vec![std::path::PathBuf::from(".")]);
+        // .env file inside allowed root must still be blocked by Secret Shield
+        let env_path = std::path::Path::new("./.env");
+        let res = sandbox.validate_path(env_path);
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Secret Shield"));
+
+        // id_rsa private key must be blocked
+        let rsa_path = std::path::Path::new("./id_rsa");
+        assert!(sandbox.validate_path(rsa_path).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_safeshell_destructive_command_blocked() {
+        let server = create_default_server();
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {
+                "name": "system_run_command",
+                "arguments": { "command": "rm -rf /" }
+            }
+        })
+        .to_string();
+
+        let resp_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert!(tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("Safe-Shell Violation"));
+        } else {
+            panic!("Expected Safe-Shell violation text");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_semantic_discovery_synonyms() {
+        let server = create_smart_discovery_server();
+
+        // Query with semantic intent synonym "save code" should discover fs_write_file
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 102,
+            "method": "tools/call",
+            "params": {
+                "name": "intermcp_search_tools",
+                "arguments": { "query": "save code" }
+            }
+        })
+        .to_string();
+
+        let resp_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert!(!tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("fs_write_file"));
+        } else {
+            panic!("Expected text output with fs_write_file");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_token_budget_sentinel() {
+        // Create server with strict 10-token budget (~40 chars)
+        let server = create_default_server().with_token_budget(10);
+
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 103,
+            "method": "tools/call",
+            "params": {
+                "name": "system_info",
+                "arguments": {}
+            }
+        })
+        .to_string();
+
+        let resp_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        // Because system_info output is > 100 chars, it must trigger the budget sentinel
+        assert!(tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("InterMCP Budget Sentinel"));
+        } else {
+            panic!("Expected budget sentinel error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_secret_vault_redaction() {
+        std::env::set_var("TEST_INTERMCP_SECRET_TOKEN", "super_secret_api_key_12345");
+        let server = create_default_server();
+
+        // If a command echos the secret token, it must be intercepted and masked
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 104,
+            "method": "tools/call",
+            "params": {
+                "name": "system_run_command",
+                "arguments": { "command": "echo super_secret_api_key_12345" }
+            }
+        })
+        .to_string();
+
+        let resp_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(!text.contains("super_secret_api_key_12345"));
+            assert!(text.contains("[REDACTED_BY_INTERMCP]"));
+        } else {
+            panic!("Expected redacted text output");
+        }
+    }
 }

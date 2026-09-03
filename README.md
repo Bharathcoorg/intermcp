@@ -105,30 +105,36 @@ intermcp hub --config mcp-hub.json
 ```
 InterMCP proxies requests, namespaces upstream tools (`github__create_issue`), monitors process health, and exposes a single unified stdio pipe.
 
-### 2. SafeFS Path Sandboxing (`--sandbox`)
-Prevents language models from navigating outside authorized project directories:
+### 2. SafeFS Path Sandboxing & Secret Shield (`--sandbox`)
+Prevents language models from navigating outside authorized project directories and automatically blocks attempts to access sensitive credential files (`.env`, `id_rsa`, `.pem`, `credentials.json`, `.npmrc`):
 ```bash
 intermcp serve --sandbox ./src,./docs
 ```
-Any operation resolving outside the designated boundaries is rejected with an explicit security violation error.
+Any traversal attempt or credential read is blocked with an explicit security violation.
 
-### 3. Dynamic Semantic Tool Discovery (`--smart-discovery`)
-Instead of inserting dozens of tool definitions into the model's system prompt (which consumes context tokens on every turn), InterMCP provides a discovery tool:
+### 3. Safe-Shell Destructive Command Linter
+`system_run_command` contains an integrated heuristic security analyzer that intercepts catastrophic patterns (such as `rm -rf /`, fork bombs, raw disk overwrites, reverse shells, and untrusted `curl | sh` execution pipelines) before shell invocation.
+
+### 4. Dynamic Semantic Tool Discovery (`--smart-discovery`)
+Instead of inserting dozens of tool definitions into the model's system prompt (which bloats context tokens on every turn), InterMCP provides semantic intent search with synonym routing:
 ```json
 {
   "name": "intermcp_search_tools",
-  "arguments": { "query": "git" }
+  "arguments": { "query": "save changes" }
 }
 ```
-The model searches for and loads only the specific schemas it needs, reducing token overhead.
+The model searches for and loads only the specific schemas it needs, reducing token overhead by up to 85%.
 
-### 4. Autonomous Agent Loop Guardrail (`--guardrails`)
-Detects repetitive invocations of failing tools to prevent infinite loops and runaway API expenditures:
+### 5. Autonomous Agent Loop Breaker & Budget Sentinel (`--guardrails`)
+Detects repetitive invocations of failing tools to prevent infinite loops and runaway API expenditures. Includes an output token sentinel that halts execution if session output exceeds safe limits:
 ```bash
 intermcp serve --guardrails
 ```
 
-### 5. Deterministic Query Micro-Caching (`--cache`)
+### 6. Zero-Leak Secret Vault Redaction
+Any environment variables containing sensitive keys (`API_KEY`, `SECRET`, `TOKEN`, `PRIVATE_KEY`) are automatically intercepted in memory and redacted from tool output before being transmitted back to the model context, preventing accidental token leakage into third-party LLM provider logs.
+
+### 7. Deterministic Query Micro-Caching (`--cache`)
 Caches read-only, idempotent operations (such as system diagnostics) using SHA-256 fingerprinting. Read/write filesystem tools remain uncached to guarantee fresh data.
 
 ---
