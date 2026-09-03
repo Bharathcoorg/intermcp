@@ -1,0 +1,10 @@
+{
+  "tools": [
+    {
+      "name": "echo_custom",
+      "description": "Echo back a custom message with a timestamp",
+      "command": "git",
+      "args": ["status", "--short"]
+    }
+  ]
+}
