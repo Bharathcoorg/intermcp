@@ -49,6 +49,18 @@ impl Server {
         self
     }
 
+    pub fn with_guardrail_policy(mut self, policy: GuardrailPolicy) -> Self {
+        self.guardrail = Some(Arc::new(policy));
+        self
+    }
+
+    pub fn with_token_budget(mut self, estimated_tokens: usize) -> Self {
+        self.guardrail = Some(Arc::new(
+            GuardrailPolicy::default_policy().with_token_budget(estimated_tokens),
+        ));
+        self
+    }
+
     pub fn add_tool(&mut self, tool: Box<dyn Tool>) -> &mut Self {
         let name = tool.name().to_string();
         self.tools.insert(name, Arc::from(tool));
@@ -165,7 +177,24 @@ impl Server {
                                 }
 
                                 match tool.execute(arguments.clone()).await {
-                                    Ok(tool_result) => {
+                                    Ok(mut tool_result) => {
+                                        // 2. Secret Shield Vault Redaction & Token Budget Sentinel
+                                        for item in &mut tool_result.content {
+                                            if let ContentItem::Text { text } = item {
+                                                *text = mask_known_secrets(text);
+                                                if let Some(guardrail) = &self.guardrail {
+                                                    if let Err(e) = guardrail.record_output(text) {
+                                                        let call_err =
+                                                            CallToolResult::error(e.to_string());
+                                                        return Some(JsonRpcResponse::success(
+                                                            req_id,
+                                                            json!(call_err),
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         let json_res = json!(tool_result);
                                         if tool.is_cacheable() {
                                             if let Some(cache) = &self.cache {
@@ -363,4 +392,17 @@ impl Server {
         info!("intermcp stdio stream closed cleanly.");
         Ok(())
     }
+}
+
+fn mask_known_secrets(text: &str) -> String {
+    let sensitive_keys = ["API_KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE_KEY"];
+    let mut masked = text.to_string();
+    for (k, v) in std::env::vars() {
+        let k_upper = k.to_uppercase();
+        if v.len() >= 8 && sensitive_keys.iter().any(|s| k_upper.contains(s)) && masked.contains(&v)
+        {
+            masked = masked.replace(&v, "[REDACTED_BY_INTERMCP]");
+        }
+    }
+    masked
 }

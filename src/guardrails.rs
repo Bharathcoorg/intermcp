@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub struct GuardrailPolicy {
     max_calls_per_minute: u32,
     loop_detection_threshold: u32,
+    max_session_chars: Option<usize>,
+    cumulative_chars: RwLock<usize>,
     history: RwLock<HashMap<String, Vec<Instant>>>,
     recent_signatures: RwLock<HashMap<String, u32>>,
 }
@@ -17,6 +19,8 @@ impl GuardrailPolicy {
         Self {
             max_calls_per_minute,
             loop_detection_threshold,
+            max_session_chars: None,
+            cumulative_chars: RwLock::new(0),
             history: RwLock::new(HashMap::new()),
             recent_signatures: RwLock::new(HashMap::new()),
         }
@@ -24,6 +28,31 @@ impl GuardrailPolicy {
 
     pub fn default_policy() -> Self {
         Self::new(60, 5) // 60 calls/min, max 5 consecutive identical calls
+    }
+
+    pub fn with_token_budget(mut self, estimated_tokens: usize) -> Self {
+        // Approximate 4 chars per token
+        self.max_session_chars = Some(estimated_tokens * 4);
+        self
+    }
+
+    pub fn record_output(&self, text: &str) -> Result<(), FastMcpError> {
+        if let Some(limit) = self.max_session_chars {
+            if let Ok(mut total) = self.cumulative_chars.write() {
+                *total += text.len();
+                if *total > limit {
+                    return Err(FastMcpError::ToolExecution(format!(
+                        "🚨 InterMCP Budget Sentinel: Session token limit reached (exceeded ~{} estimated tokens). Execution paused to prevent runaway API spend.",
+                        *total / 4
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn estimated_tokens_used(&self) -> usize {
+        self.cumulative_chars.read().map(|t| *t / 4).unwrap_or(0)
     }
 
     pub fn check_call(
