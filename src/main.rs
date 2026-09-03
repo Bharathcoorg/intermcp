@@ -40,6 +40,9 @@ enum Commands {
         /// Enable Autonomous AI Agent infinite-loop breaker and cost guardrail
         #[arg(long)]
         guardrails: bool,
+        /// Maximum session token output budget before pausing execution (e.g. 50000)
+        #[arg(long)]
+        budget: Option<usize>,
         /// Path to custom declarative tools manifest JSON file (e.g. intermcp.json)
         #[arg(short, long)]
         manifest: Option<String>,
@@ -50,7 +53,7 @@ enum Commands {
         #[arg(long)]
         token: Option<String>,
     },
-    /// One-Click Auto-Setup: Automatically configure Claude Desktop, Cursor, Windsurf, and Cline
+    /// One-Click Auto-Setup: Automatically configure Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Zed, and Continue
     Setup {
         /// Configure all detected desktop AI agents automatically
         #[arg(short, long, default_value_t = true)]
@@ -122,6 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache: None,
         smart_discovery: false,
         guardrails: false,
+        budget: None,
         manifest: None,
         http: None,
         token: None,
@@ -132,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cache,
             smart_discovery,
             guardrails,
+            budget,
             manifest,
             http,
             token,
@@ -151,6 +156,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if guardrails {
                 server = server.with_guardrails(60, 5);
+            }
+
+            if let Some(token_limit) = budget {
+                server = server.with_token_budget(token_limit);
             }
 
             if let Some(p) = plugin {

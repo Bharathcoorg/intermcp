@@ -32,11 +32,31 @@ pub fn auto_configure_all_ides(binary_path: &str) -> Vec<SetupResult> {
         binary_path,
     ));
 
-    // 4. Cline (VS Code Extension)
+    // 4. Cline (VS Code)
     let cline_path = get_cline_path();
     results.push(configure_mcp_json(
         "Cline (VS Code)",
         &cline_path,
+        binary_path,
+    ));
+
+    // 5. Roo Code (VS Code)
+    let roo_path = get_roo_code_path();
+    results.push(configure_mcp_json(
+        "Roo Code (VS Code)",
+        &roo_path,
+        binary_path,
+    ));
+
+    // 6. Zed Editor
+    let zed_path = get_zed_path();
+    results.push(configure_zed_json(&zed_path, binary_path));
+
+    // 7. Continue.dev
+    let continue_path = get_continue_path();
+    results.push(configure_mcp_json(
+        "Continue.dev",
+        &continue_path,
         binary_path,
     ));
 
@@ -222,5 +242,168 @@ fn get_cline_path() -> PathBuf {
             .join("saoudrizwan.claude-dev")
             .join("settings")
             .join("cline_mcp_settings.json")
+    }
+}
+
+fn get_roo_code_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(appdata)
+            .join("Code")
+            .join("User")
+            .join("globalStorage")
+            .join("rooveterinaryinc.roo-cline")
+            .join("settings")
+            .join("cline_mcp_settings.json")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("globalStorage")
+            .join("rooveterinaryinc.roo-cline")
+            .join("settings")
+            .join("cline_mcp_settings.json")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join(".config")
+            .join("Code")
+            .join("User")
+            .join("globalStorage")
+            .join("rooveterinaryinc.roo-cline")
+            .join("settings")
+            .join("cline_mcp_settings.json")
+    }
+}
+
+fn get_zed_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(appdata).join("Zed").join("settings.json")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Zed")
+            .join("settings.json")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join(".config")
+            .join("zed")
+            .join("settings.json")
+    }
+}
+
+fn get_continue_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(userprofile)
+            .join(".continue")
+            .join("config.json")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home).join(".continue").join("config.json")
+    }
+}
+
+fn configure_zed_json(config_path: &Path, binary_path: &str) -> SetupResult {
+    let parent = match config_path.parent() {
+        Some(p) => p,
+        None => {
+            return SetupResult {
+                name: "Zed Editor".to_string(),
+                path: config_path.to_path_buf(),
+                success: false,
+                message: "Invalid configuration directory".to_string(),
+            }
+        }
+    };
+
+    if !config_path.exists() && !parent.exists() {
+        return SetupResult {
+            name: "Zed Editor".to_string(),
+            path: config_path.to_path_buf(),
+            success: true,
+            message: "Not detected on this system (skipped)".to_string(),
+        };
+    }
+
+    let _ = fs::create_dir_all(parent);
+
+    let mut config: Value = if config_path.exists() {
+        match fs::read_to_string(config_path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
+        }
+    } else {
+        json!({})
+    };
+
+    if !config.is_object() {
+        config = json!({});
+    }
+
+    if config_path.exists() {
+        let backup_path = config_path.with_extension("json.bak");
+        let _ = fs::copy(config_path, backup_path);
+    }
+
+    let context_servers = config
+        .as_object_mut()
+        .unwrap()
+        .entry("context_servers")
+        .or_insert_with(|| json!({}));
+
+    if let Some(servers_obj) = context_servers.as_object_mut() {
+        servers_obj.insert(
+            "intermcp".to_string(),
+            json!({
+                "command": {
+                    "path": binary_path,
+                    "args": ["serve"]
+                }
+            }),
+        );
+    }
+
+    match serde_json::to_string_pretty(&config) {
+        Ok(serialized) => match fs::write(config_path, serialized) {
+            Ok(_) => SetupResult {
+                name: "Zed Editor".to_string(),
+                path: config_path.to_path_buf(),
+                success: true,
+                message: "Successfully configured and merged InterMCP context server".to_string(),
+            },
+            Err(e) => SetupResult {
+                name: "Zed Editor".to_string(),
+                path: config_path.to_path_buf(),
+                success: false,
+                message: format!("Failed to write configuration: {}", e),
+            },
+        },
+        Err(e) => SetupResult {
+            name: "Zed Editor".to_string(),
+            path: config_path.to_path_buf(),
+            success: false,
+            message: format!("Serialization error: {}", e),
+        },
     }
 }
