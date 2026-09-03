@@ -12,18 +12,17 @@ const fs = require("fs");
 const isWin = process.platform === "win32";
 const binaryName = isWin ? "intermcp.exe" : "intermcp";
 
-// Candidates for binary location
+// Candidates for binary location (always prefer optimized release binary)
 const candidates = [
   path.join(__dirname, "..", "target", "release", binaryName),
-  path.join(__dirname, "..", "target", "debug", binaryName),
   path.join(__dirname, binaryName),
 ];
 
 let targetBin = candidates.find(p => fs.existsSync(p));
 
 if (!targetBin) {
-  // If not compiled yet, invoke via cargo run directly
-  const cargoArgs = ["run", "--manifest-path", path.join(__dirname, "..", "Cargo.toml"), "--", ...process.argv.slice(2)];
+  // If not pre-compiled, invoke via cargo run --release directly
+  const cargoArgs = ["run", "--release", "--manifest-path", path.join(__dirname, "..", "Cargo.toml"), "--", ...process.argv.slice(2)];
   const proc = spawn("cargo", cargoArgs, { stdio: "inherit" });
   proc.on("exit", (code) => process.exit(code || 0));
 } else {
