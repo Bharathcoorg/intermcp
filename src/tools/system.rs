@@ -52,6 +52,13 @@ pub fn create_shell_exec_tool() -> Box<dyn Tool> {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| FastMcpError::InvalidRequest("Missing command".into()))?;
 
+            if let Some(violation) = is_destructive_command(cmd_str) {
+                return Ok(CallToolResult::error(format!(
+                    "🛡️ InterMCP Safe-Shell Violation: {}. Execution blocked by security policy.",
+                    violation
+                )));
+            }
+
             #[cfg(target_os = "windows")]
             let mut cmd = Command::new("cmd");
             #[cfg(target_os = "windows")]
@@ -103,4 +110,51 @@ pub fn create_shell_exec_tool() -> Box<dyn Tool> {
             result
         },
     ))
+}
+
+fn is_destructive_command(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.to_lowercase();
+    let trimmed = lower.trim();
+
+    // Fork bombs
+    if trimmed.contains(":(){ :|:& };:") || trimmed.contains(":(){:|:&};:") {
+        return Some("Fork bomb detected");
+    }
+
+    // Root / system recursive deletions
+    if (trimmed.contains("rm ") || trimmed.contains("rmdir "))
+        && (trimmed.contains("-rf /")
+            || trimmed.contains("-rf /*")
+            || trimmed.contains("-rf ~")
+            || trimmed.contains("-fr /")
+            || trimmed.contains("/s /q c:\\")
+            || trimmed.contains("/s /q %systemdrive%"))
+    {
+        return Some("Destructive root filesystem deletion detected");
+    }
+
+    // Disk formatting or raw device overwrites
+    if trimmed.starts_with("mkfs") || (trimmed.contains("dd if=") && trimmed.contains("of=/dev/")) {
+        return Some("Raw disk format/overwrite command detected");
+    }
+
+    // Remote shell piping
+    if (trimmed.contains("curl ") || trimmed.contains("wget "))
+        && (trimmed.contains("| sh")
+            || trimmed.contains("| bash")
+            || trimmed.contains("|sh")
+            || trimmed.contains("|bash"))
+    {
+        return Some("Unchecked remote code execution pipeline (curl | sh) detected");
+    }
+
+    // Reverse shells
+    if trimmed.contains("bash -i >& /dev/tcp/")
+        || (trimmed.contains("nc ")
+            && (trimmed.contains("-e /bin/sh") || trimmed.contains("-e /bin/bash")))
+    {
+        return Some("Reverse shell pattern detected");
+    }
+
+    None
 }
