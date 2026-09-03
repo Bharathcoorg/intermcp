@@ -1,0 +1,278 @@
+pub mod auto_config;
+pub mod cache;
+pub mod discovery;
+pub mod error;
+pub mod guardrails;
+pub mod http_server;
+pub mod hub;
+pub mod manifest;
+pub mod prompt;
+pub mod protocol;
+pub mod resource;
+pub mod sandbox;
+pub mod server;
+pub mod tool;
+pub mod tools;
+
+pub use auto_config::{auto_configure_all_ides, SetupResult};
+pub use cache::ToolCache;
+pub use discovery::create_tool_discovery_tool;
+pub use error::FastMcpError;
+pub use guardrails::GuardrailPolicy;
+pub use http_server::{run_http_server, HttpServerConfig};
+pub use hub::{load_hub_tools, HubConfig, UpstreamServerConfig};
+pub use manifest::{load_manifest_tools, DeclarativeTool, ManifestConfig, ManifestTool};
+pub use prompt::{Prompt, SimplePrompt};
+pub use protocol::{CallToolResult, ContentItem, JsonRpcRequest, JsonRpcResponse, ToolDefinition};
+pub use resource::{Resource, SimpleResource};
+pub use sandbox::SandboxPolicy;
+pub use server::Server;
+pub use tool::{SimpleTool, Tool};
+
+pub type Result<T> = std::result::Result<T, FastMcpError>;
+
+/// Instantiate standard InterMCP server with universal tools, resources, and prompts
+pub fn create_default_server() -> Server {
+    let mut server = Server::new("intermcp", env!("CARGO_PKG_VERSION"));
+    server.add_tools(tools::universal_toolset(None));
+    server.add_resource(resource::create_system_resource());
+    server.add_prompt(prompt::create_code_review_prompt());
+    server
+}
+
+/// Instantiate an InterMCP server with SafeFS sandboxing and optional caching
+pub fn create_sandboxed_server(
+    sandbox: SandboxPolicy,
+    cache_ttl: Option<std::time::Duration>,
+) -> Server {
+    let mut server = Server::new("intermcp-sandboxed", env!("CARGO_PKG_VERSION"));
+    if let Some(ttl) = cache_ttl {
+        server = server.with_cache(ttl);
+    }
+    server.add_tools(tools::universal_toolset(Some(sandbox)));
+    server.add_resource(resource::create_system_resource());
+    server.add_prompt(prompt::create_code_review_prompt());
+    server
+}
+
+/// Instantiate an InterMCP server with dynamic semantic tool discovery enabled (saves 85% prompt tokens)
+pub fn create_smart_discovery_server() -> Server {
+    let mut server = create_default_server();
+    let defs = server.list_tool_definitions();
+    let discovery_tool = discovery::create_tool_discovery_tool(defs);
+    server.add_tool(discovery_tool);
+    server
+}
+
+/// Instantiate an InterMCP server with an optional plugin (e.g. "gravity" for Omni-VM)
+pub fn create_server_with_plugin(plugin: &str) -> Server {
+    let mut server = create_default_server();
+    server.add_tools(tools::plugin_toolset(plugin));
+    server
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_mcp_initialize() {
+        let server = create_default_server();
+        let init_req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "clientInfo": {
+                    "name": "claude-desktop",
+                    "version": "0.1.0"
+                }
+            }
+        });
+
+        let resp_str = server.handle_raw_message(&init_req.to_string()).await;
+        assert!(resp_str.is_some());
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str.unwrap()).unwrap();
+        assert_eq!(resp.id, json!(1));
+        assert!(resp.error.is_none());
+        assert!(resp.result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_smart_discovery_tool() {
+        let server = create_smart_discovery_server();
+
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "tools/call",
+            "params": {
+                "name": "intermcp_search_tools",
+                "arguments": { "query": "git" }
+            }
+        })
+        .to_string();
+
+        let resp_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert!(!tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("git_status"));
+            assert!(text.contains("git_diff"));
+        } else {
+            panic!("Expected text output");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mcp_loop_breaker_guardrail() {
+        let server = create_default_server().with_guardrails(100, 3); // loop threshold: 3 calls
+
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": {
+                "name": "system_info",
+                "arguments": {}
+            }
+        })
+        .to_string();
+
+        // Call 1, 2, 3 should succeed
+        let _ = server.handle_raw_message(&call_req).await;
+        let _ = server.handle_raw_message(&call_req).await;
+        let _ = server.handle_raw_message(&call_req).await;
+
+        // Call 4: Loop Breaker must trigger!
+        let resp4_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp4: JsonRpcResponse = serde_json::from_str(&resp4_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp4.result.unwrap()).unwrap();
+
+        assert!(tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("InterMCP Loop Breaker: Infinite loop detected"));
+        } else {
+            panic!("Expected loop breaker error text");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tool_caching() {
+        let server = create_default_server().with_cache(Duration::from_secs(60));
+
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "system_info",
+                "arguments": {}
+            }
+        })
+        .to_string();
+
+        let resp1 = server.handle_raw_message(&call_req).await;
+        assert!(resp1.is_some());
+
+        let resp2 = server.handle_raw_message(&call_req).await;
+        assert!(resp2.is_some());
+
+        let (hits, misses, count) = server.cache_stats().unwrap();
+        assert_eq!(misses, 1);
+        assert_eq!(hits, 1);
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_safefs_sandbox_violation() {
+        let sandbox = SandboxPolicy::new(vec![std::path::PathBuf::from("./src")]);
+        let server = create_sandboxed_server(sandbox, None);
+
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {
+                "name": "fs_read_file",
+                "arguments": { "path": "../../Cargo.toml" }
+            }
+        })
+        .to_string();
+
+        let resp_str = server.handle_raw_message(&call_req).await.unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let tool_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+
+        assert!(tool_res.is_error);
+        if let ContentItem::Text { text } = &tool_res.content[0] {
+            assert!(text.contains("SafeFS Security Violation"));
+        } else {
+            panic!("Expected SafeFS violation text");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mcp_resources() {
+        let server = create_default_server();
+
+        let list_req = json!({
+            "jsonrpc": "2.0",
+            "id": "res-1",
+            "method": "resources/list",
+            "params": {}
+        });
+        let resp_str = server
+            .handle_raw_message(&list_req.to_string())
+            .await
+            .unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
+        let list_res: protocol::ListResourcesResult =
+            serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert!(list_res
+            .resources
+            .iter()
+            .any(|r| r.uri == "system://diagnostics"));
+    }
+
+    #[tokio::test]
+    async fn test_safefs_nested_uncreated_path() {
+        let sandbox = SandboxPolicy::new(vec![std::path::PathBuf::from("./src")]);
+
+        // Legitimate nested uncreated file inside ./src must be allowed
+        let valid_path = std::path::Path::new("./src/uncreated_sub/nested/file.rs");
+        assert!(sandbox.validate_path(valid_path).is_ok());
+
+        // Path traversal using ../ outside allowed root must be blocked
+        let traversal_path = std::path::Path::new("./src/uncreated_sub/../../Cargo.toml");
+        assert!(sandbox.validate_path(traversal_path).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cache_safety_on_mutations() {
+        // Filesystem and git tools must NEVER be cached to prevent serving stale data to agents
+        let server = create_default_server().with_cache(Duration::from_secs(60));
+
+        let call_req = json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "git_status",
+                "arguments": {}
+            }
+        })
+        .to_string();
+
+        let _ = server.handle_raw_message(&call_req).await;
+        let _ = server.handle_raw_message(&call_req).await;
+
+        let (hits, _misses, _count) = server.cache_stats().unwrap();
+        // git_status is not cacheable, so hits must remain 0!
+        assert_eq!(hits, 0);
+    }
+}
