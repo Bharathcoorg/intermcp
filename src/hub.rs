@@ -1,10 +1,15 @@
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
-use tracing::{error, info};
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{error, info, warn};
 
 use crate::error::FastMcpError;
 use crate::protocol::{CallToolResult, JsonRpcResponse, ToolDefinition};
@@ -17,7 +22,7 @@ pub struct UpstreamServerConfig {
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
-    pub env: std::collections::HashMap<String, String>,
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,50 +30,43 @@ pub struct HubConfig {
     pub servers: Vec<UpstreamServerConfig>,
 }
 
-#[allow(dead_code)]
-struct UpstreamProcess {
-    name: String,
-    stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
-    _child: Child,
-    request_id: u64,
+struct HubRequest {
+    id: u64,
+    payload: String,
+    response_tx: oneshot::Sender<Result<JsonRpcResponse, FastMcpError>>,
 }
 
-impl UpstreamProcess {
-    async fn spawn(config: &UpstreamServerConfig) -> Result<Self, FastMcpError> {
-        let mut cmd = Command::new(&config.command);
-        cmd.args(&config.args)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
+type PendingMap = Arc<RwLock<HashMap<u64, oneshot::Sender<Result<JsonRpcResponse, FastMcpError>>>>>;
 
-        let mut child = cmd.spawn().map_err(|e| {
-            FastMcpError::ToolExecution(format!(
-                "Failed to spawn upstream MCP server '{}': {}",
-                config.name, e
-            ))
-        })?;
+pub struct UpstreamHandle {
+    name: String,
+    tx: mpsc::Sender<HubRequest>,
+    request_counter: AtomicU64,
+}
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            FastMcpError::ToolExecution("Failed to acquire upstream stdin".into())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            FastMcpError::ToolExecution("Failed to acquire upstream stdout".into())
-        })?;
-        let reader = BufReader::new(stdout);
+impl UpstreamHandle {
+    pub async fn spawn(config: UpstreamServerConfig) -> Result<Self, FastMcpError> {
+        let (tx, rx) = mpsc::channel(32);
+        let name = config.name.clone();
 
-        let mut proc = Self {
-            name: config.name.clone(),
-            stdin,
-            reader,
-            _child: child,
-            request_id: 0,
+        let supervisor = UpstreamSupervisor::new(config, rx);
+        tokio::spawn(async move {
+            supervisor.run().await;
+        });
+
+        let handle = Self {
+            name,
+            tx,
+            request_counter: AtomicU64::new(1),
         };
 
-        // Initialize upstream
-        let init_req = serde_json::json!({
+        handle.initialize().await?;
+
+        Ok(handle)
+    }
+
+    async fn initialize(&self) -> Result<(), FastMcpError> {
+        let req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
@@ -77,65 +75,45 @@ impl UpstreamProcess {
                 "clientInfo": { "name": "intermcp-hub", "version": "0.1.0" }
             }
         });
-
-        let _ = proc.send_raw(&init_req.to_string()).await?;
-        Ok(proc)
+        self.send_request(1, req.to_string()).await?;
+        Ok(())
     }
 
-    async fn send_raw(&mut self, json_str: &str) -> Result<String, FastMcpError> {
-        self.stdin
-            .write_all(json_str.as_bytes())
-            .await
-            .map_err(FastMcpError::Io)?;
-        self.stdin
-            .write_all(b"\n")
-            .await
-            .map_err(FastMcpError::Io)?;
-        self.stdin.flush().await.map_err(FastMcpError::Io)?;
-
-        let read_future = async {
-            loop {
-                let mut line = String::new();
-                let bytes = self
-                    .reader
-                    .read_line(&mut line)
-                    .await
-                    .map_err(FastMcpError::Io)?;
-                if bytes == 0 {
-                    return Err(FastMcpError::ToolExecution(format!(
-                        "Upstream MCP process '{}' terminated or closed stdout stream unexpectedly",
-                        self.name
-                    )));
-                }
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    return Ok(line);
-                }
-            }
+    async fn send_request(&self, id: u64, payload: String) -> Result<JsonRpcResponse, FastMcpError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let hub_req = HubRequest {
+            id,
+            payload,
+            response_tx: resp_tx,
         };
 
-        match tokio::time::timeout(std::time::Duration::from_secs(30), read_future).await {
-            Ok(res) => res,
+        self.tx.send(hub_req).await.map_err(|_| {
+            FastMcpError::ToolExecution(format!("Upstream '{}' supervisor stopped", self.name))
+        })?;
+
+        match tokio::time::timeout(Duration::from_secs(30), resp_rx).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(_)) => Err(FastMcpError::ToolExecution(format!(
+                "Upstream '{}' response channel dropped",
+                self.name
+            ))),
             Err(_) => Err(FastMcpError::ToolExecution(format!(
-                "Upstream MCP process '{}' timed out after 30 seconds",
+                "Upstream '{}' request timed out after 30 seconds",
                 self.name
             ))),
         }
     }
 
-    async fn list_tools(&mut self) -> Result<Vec<ToolDefinition>, FastMcpError> {
-        self.request_id += 1;
+    pub async fn list_tools(&self) -> Result<Vec<ToolDefinition>, FastMcpError> {
+        let id = self.request_counter.fetch_add(1, Ordering::Relaxed);
         let req = serde_json::json!({
             "jsonrpc": "2.0",
-            "id": self.request_id,
+            "id": id,
             "method": "tools/list",
             "params": {}
         });
 
-        let resp_str = self.send_raw(&req.to_string()).await?;
-        let resp: JsonRpcResponse =
-            serde_json::from_str(&resp_str).map_err(FastMcpError::Serialization)?;
-
+        let resp = self.send_request(id, req.to_string()).await?;
         if let Some(res) = resp.result {
             let list_res: crate::protocol::ListToolsResult =
                 serde_json::from_value(res).map_err(FastMcpError::Serialization)?;
@@ -145,15 +123,15 @@ impl UpstreamProcess {
         }
     }
 
-    async fn call_tool(
-        &mut self,
+    pub async fn call_tool(
+        &self,
         tool_name: &str,
-        args: serde_json::Value,
+        args: Value,
     ) -> Result<CallToolResult, FastMcpError> {
-        self.request_id += 1;
+        let id = self.request_counter.fetch_add(1, Ordering::Relaxed);
         let req = serde_json::json!({
             "jsonrpc": "2.0",
-            "id": self.request_id,
+            "id": id,
             "method": "tools/call",
             "params": {
                 "name": tool_name,
@@ -161,10 +139,7 @@ impl UpstreamProcess {
             }
         });
 
-        let resp_str = self.send_raw(&req.to_string()).await?;
-        let resp: JsonRpcResponse =
-            serde_json::from_str(&resp_str).map_err(FastMcpError::Serialization)?;
-
+        let resp = self.send_request(id, req.to_string()).await?;
         if let Some(res) = resp.result {
             let tool_res: CallToolResult =
                 serde_json::from_value(res).map_err(FastMcpError::Serialization)?;
@@ -180,15 +155,159 @@ impl UpstreamProcess {
     }
 }
 
-/// Upstream proxy tool that routes calls to a child MCP server
-#[allow(dead_code)]
+struct UpstreamSupervisor {
+    config: UpstreamServerConfig,
+    rx: mpsc::Receiver<HubRequest>,
+}
+
+impl UpstreamSupervisor {
+    fn new(config: UpstreamServerConfig, rx: mpsc::Receiver<HubRequest>) -> Self {
+        Self { config, rx }
+    }
+
+    async fn spawn_process(config: &UpstreamServerConfig) -> Result<(Child, ChildStdin, tokio::io::Lines<BufReader<tokio::process::ChildStdout>>), FastMcpError> {
+        let mut cmd = Command::new(&config.command);
+        cmd.env_clear();
+        for &key in crate::tools::system::SAFE_ENV_VARS {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
+        cmd.args(&config.args)
+            .envs(&config.env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
+
+        let mut child = cmd.spawn().map_err(|e| {
+            FastMcpError::ToolExecution(format!(
+                "Failed to spawn upstream '{}': {}",
+                config.name, e
+            ))
+        })?;
+
+        let stdin = child.stdin.take().ok_or_else(|| {
+            FastMcpError::ToolExecution("Failed to acquire upstream stdin".into())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            FastMcpError::ToolExecution("Failed to acquire upstream stdout".into())
+        })?;
+        let reader = BufReader::new(stdout).lines();
+
+        Ok((child, stdin, reader))
+    }
+
+    async fn run(mut self) {
+        let backoff_delays = [
+            Duration::from_millis(100),
+            Duration::from_millis(500),
+            Duration::from_millis(2000),
+        ];
+
+        let mut respawn_attempts = 0;
+
+        loop {
+            let (child, mut stdin, mut reader) = match Self::spawn_process(&self.config).await {
+                Ok(res) => {
+                    respawn_attempts = 0;
+                    res
+                }
+                Err(e) => {
+                    error!("Failed to spawn upstream '{}': {}", self.config.name, e);
+                    if respawn_attempts < backoff_delays.len() {
+                        tokio::time::sleep(backoff_delays[respawn_attempts]).await;
+                        respawn_attempts += 1;
+                        continue;
+                    } else {
+                        error!("Max respawn attempts reached for '{}'. Terminating.", self.config.name);
+                        return;
+                    }
+                }
+            };
+
+            let pending_map: PendingMap =
+                Arc::new(RwLock::new(HashMap::new()));
+
+            let reader_pending = Arc::clone(&pending_map);
+            let name_clone = self.config.name.clone();
+
+            let mut reader_task = tokio::spawn(async move {
+                while let Ok(Some(line)) = reader.next_line().await {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
+                        if let Some(id_num) = resp.id.as_u64() {
+                            if let Some(tx) = reader_pending.write().remove(&id_num) {
+                                let _ = tx.send(Ok(resp));
+                            }
+                        } else if let Some(id_str) = resp.id.as_str() {
+                            if let Ok(id_parsed) = id_str.parse::<u64>() {
+                                if let Some(tx) = reader_pending.write().remove(&id_parsed) {
+                                    let _ = tx.send(Ok(resp));
+                                }
+                            }
+                        }
+                    }
+                }
+                warn!("Upstream '{}' stdout stream closed", name_clone);
+            });
+
+            let mut process_failed = false;
+
+            while !process_failed {
+                tokio::select! {
+                    Some(req) = self.rx.recv() => {
+                        pending_map.write().insert(req.id, req.response_tx);
+                        let write_res = stdin.write_all(req.payload.as_bytes()).await;
+                        if write_res.is_ok() {
+                            let _ = stdin.write_all(b"\n").await;
+                            let flush_res = stdin.flush().await;
+                            if flush_res.is_err() {
+                                process_failed = true;
+                            }
+                        } else {
+                            process_failed = true;
+                        }
+                    }
+                    _ = &mut reader_task => {
+                        process_failed = true;
+                    }
+                }
+            }
+
+            reader_task.abort();
+            drop(child);
+
+            for (_, tx) in pending_map.write().drain() {
+                let _ = tx.send(Err(FastMcpError::ToolExecution(format!(
+                    "Upstream '{}' process terminated mid-execution",
+                    self.config.name
+                ))));
+            }
+
+            if respawn_attempts < backoff_delays.len() {
+                info!("Auto-respawning upstream '{}' in {:?}...", self.config.name, backoff_delays[respawn_attempts]);
+                tokio::time::sleep(backoff_delays[respawn_attempts]).await;
+                respawn_attempts += 1;
+            } else {
+                error!("Upstream '{}' exceeded maximum restart attempts", self.config.name);
+                break;
+            }
+        }
+    }
+}
+
 pub struct ProxiedTool {
+    #[allow(dead_code)]
     upstream_name: String,
     original_tool_name: String,
     prefixed_name: String,
     description: String,
-    input_schema: serde_json::Value,
-    proc: Arc<Mutex<UpstreamProcess>>,
+    input_schema: Value,
+    handle: Arc<UpstreamHandle>,
 }
 
 #[async_trait::async_trait]
@@ -201,41 +320,42 @@ impl Tool for ProxiedTool {
         &self.description
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self) -> Value {
         self.input_schema.clone()
     }
 
-    async fn execute(&self, arguments: serde_json::Value) -> Result<CallToolResult, FastMcpError> {
-        let mut proc_guard = self.proc.lock().await;
-        proc_guard
+    async fn execute(&self, arguments: Value) -> Result<CallToolResult, FastMcpError> {
+        self.handle
             .call_tool(&self.original_tool_name, arguments)
             .await
     }
 }
 
-/// Creates tools multiplexed from multiple external MCP servers
 pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, FastMcpError> {
     let mut all_tools: Vec<Box<dyn Tool>> = Vec::new();
+    let mut registered_names = std::collections::HashSet::new();
 
     for srv_cfg in config.servers {
-        info!(
-            "Spawning and aggregating upstream MCP server '{}'...",
-            srv_cfg.name
-        );
-        match UpstreamProcess::spawn(&srv_cfg).await {
-            Ok(mut proc) => match proc.list_tools().await {
+        info!("Spawning upstream server '{}'...", srv_cfg.name);
+        match UpstreamHandle::spawn(srv_cfg.clone()).await {
+            Ok(handle) => match handle.list_tools().await {
                 Ok(tools) => {
                     info!("Discovered {} tools from '{}'", tools.len(), srv_cfg.name);
-                    let shared_proc = Arc::new(Mutex::new(proc));
+                    let shared_handle = Arc::new(handle);
                     for tool in tools {
                         let prefixed = format!("{}__{}", srv_cfg.name, tool.name);
+                        if registered_names.contains(&prefixed) {
+                            warn!("Supply-Chain Collision: Skipping duplicate tool '{}' from upstream '{}'.", prefixed, srv_cfg.name);
+                            continue;
+                        }
+                        registered_names.insert(prefixed.clone());
                         all_tools.push(Box::new(ProxiedTool {
                             upstream_name: srv_cfg.name.clone(),
                             original_tool_name: tool.name,
                             prefixed_name: prefixed,
                             description: tool.description,
                             input_schema: tool.input_schema,
-                            proc: Arc::clone(&shared_proc),
+                            handle: Arc::clone(&shared_handle),
                         }));
                     }
                 }
@@ -244,10 +364,7 @@ pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, Fas
                 }
             },
             Err(e) => {
-                error!(
-                    "Failed to initialize upstream server '{}': {}",
-                    srv_cfg.name, e
-                );
+                error!("Failed to initialize upstream '{}': {}", srv_cfg.name, e);
             }
         }
     }

@@ -1,5 +1,6 @@
 pub mod auto_config;
 pub mod cache;
+pub mod config;
 pub mod discovery;
 pub mod error;
 pub mod guardrails;
@@ -8,14 +9,18 @@ pub mod hub;
 pub mod manifest;
 pub mod prompt;
 pub mod protocol;
+pub mod record;
 pub mod resource;
 pub mod sandbox;
 pub mod server;
+pub mod smac;
 pub mod tool;
 pub mod tools;
+pub mod vault_lock;
 
-pub use auto_config::{auto_configure_all_ides, SetupResult};
+pub use auto_config::{configure_all_ides, configure_all_ides as auto_configure_all_ides, SetupResult};
 pub use cache::ToolCache;
+pub use config::PolicyConfig;
 pub use discovery::create_tool_discovery_tool;
 pub use error::FastMcpError;
 pub use guardrails::GuardrailPolicy;
@@ -24,10 +29,13 @@ pub use hub::{load_hub_tools, HubConfig, UpstreamServerConfig};
 pub use manifest::{load_manifest_tools, DeclarativeTool, ManifestConfig, ManifestTool};
 pub use prompt::{Prompt, SimplePrompt};
 pub use protocol::{CallToolResult, ContentItem, JsonRpcRequest, JsonRpcResponse, ToolDefinition};
+pub use record::{FrameDirection, ReplaySummary, SessionFrame, SessionRecorder, SessionReplayer};
 pub use resource::{Resource, SimpleResource};
 pub use sandbox::SandboxPolicy;
-pub use server::Server;
+pub use server::{mask_secrets, Server};
+pub use smac::{verify_smac_log, SmacEntry, SmacLogger};
 pub use tool::{SimpleTool, Tool};
+pub use vault_lock::{PendingActionSummary, TimeLockedVault};
 
 pub type Result<T> = std::result::Result<T, FastMcpError>;
 

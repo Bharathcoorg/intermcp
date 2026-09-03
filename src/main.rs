@@ -22,6 +22,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Start the intermcp engine (stdio mode by default, or HTTP/SSE mode)
     Serve {
@@ -46,12 +47,40 @@ enum Commands {
         /// Path to custom declarative tools manifest JSON file (e.g. intermcp.json)
         #[arg(short, long)]
         manifest: Option<String>,
+        /// Path to policy configuration file (e.g. intermcp.toml or intermcp.json)
+        #[arg(long)]
+        config: Option<String>,
         /// Run as a remote HTTP/SSE server instead of stdio (e.g. '0.0.0.0:8080')
         #[arg(long)]
         http: Option<String>,
         /// Secret Bearer token for HTTP/SSE authentication
         #[arg(long)]
         token: Option<String>,
+        /// Explicit Allowed CORS Origin for HTTP/SSE endpoint
+        #[arg(long)]
+        cors_origin: Option<String>,
+        /// Additional allowed binaries for Safe-Shell execution (comma-separated)
+        #[arg(long)]
+        allow_bin: Option<String>,
+        /// Path to record session flight trace (.imcp)
+        #[arg(long)]
+        record: Option<String>,
+        /// Path to write SMAC tamper-evident cryptographic audit chain log
+        #[arg(long)]
+        audit_log: Option<String>,
+        /// List of tools requiring human supervisor approval (comma-separated)
+        #[arg(long)]
+        time_lock: Option<String>,
+    },
+    /// Replay an .imcp session flight trace against the server and output diff results
+    Replay {
+        /// Path to .imcp session recording file
+        trace: String,
+    },
+    /// Cryptographically verify the integrity of an SMAC audit chain
+    VerifyAudit {
+        /// Path to SMAC audit chain log file
+        log: String,
     },
     /// One-Click Auto-Setup: Automatically configure Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Zed, and Continue
     Setup {
@@ -127,8 +156,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         guardrails: false,
         budget: None,
         manifest: None,
+        config: None,
         http: None,
         token: None,
+        cors_origin: None,
+        allow_bin: None,
+        record: None,
+        audit_log: None,
+        time_lock: None,
     }) {
         Commands::Serve {
             plugin,
@@ -138,28 +173,92 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             guardrails,
             budget,
             manifest,
+            config,
             http,
             token,
+            cors_origin,
+            allow_bin,
+            record,
+            audit_log,
+            time_lock,
         } => {
-            let sandbox_policy = if let Some(paths_str) = sandbox {
-                let paths: Vec<PathBuf> = paths_str
-                    .split(',')
-                    .map(|s| PathBuf::from(s.trim()))
-                    .collect();
-                SandboxPolicy::new(paths)
+            let policy_file = config.as_deref().or_else(|| {
+                if std::path::Path::new("intermcp.toml").exists() {
+                    Some("intermcp.toml")
+                } else if std::path::Path::new("intermcp.json").exists() {
+                    Some("intermcp.json")
+                } else {
+                    None
+                }
+            });
+
+            let loaded_policy = if let Some(path_str) = policy_file {
+                intermcp::PolicyConfig::load_from_file(std::path::Path::new(path_str)).ok()
+            } else {
+                None
+            };
+
+            let mut allowed_roots = Vec::new();
+            if let Some(paths_str) = sandbox {
+                for s in paths_str.split(',') {
+                    allowed_roots.push(PathBuf::from(s.trim()));
+                }
+            }
+            if let Some(policy) = &loaded_policy {
+                allowed_roots.extend(policy.allowed_roots.clone());
+            }
+
+            let mut sandbox_policy = if !allowed_roots.is_empty() {
+                SandboxPolicy::new(allowed_roots)
             } else {
                 SandboxPolicy::unrestricted()
             };
 
+            if let Some(policy) = &loaded_policy {
+                if !policy.sensitive_files.is_empty() {
+                    sandbox_policy = sandbox_policy
+                        .with_additional_sensitive_files(policy.sensitive_files.clone());
+                }
+                if !policy.sensitive_keywords.is_empty() {
+                    sandbox_policy = sandbox_policy
+                        .with_additional_sensitive_keywords(policy.sensitive_keywords.clone());
+                }
+            }
+
+            let mut extra_bins = Vec::new();
+            if let Some(bins_str) = allow_bin {
+                for b in bins_str.split(',') {
+                    let trimmed = b.trim();
+                    if !trimmed.is_empty() {
+                        extra_bins.push(trimmed.to_string());
+                    }
+                }
+            }
+            if let Some(policy) = &loaded_policy {
+                extra_bins.extend(policy.shell_allowlist.clone());
+            }
+
             let mut server =
                 intermcp::create_sandboxed_server(sandbox_policy, cache.map(Duration::from_secs));
 
-            if guardrails {
-                server = server.with_guardrails(60, 5);
+            if let Some(policy) = &loaded_policy {
+                if let Some(bytes) = policy.cache_max_bytes {
+                    server = server.with_cache_bytes(Duration::from_secs(cache.unwrap_or(60)), bytes);
+                }
             }
 
-            if let Some(token_limit) = budget {
-                server = server.with_token_budget(token_limit);
+            let rate_limit = loaded_policy.as_ref().and_then(|p| p.rate_limit).unwrap_or(60);
+            if guardrails || loaded_policy.as_ref().and_then(|p| p.rate_limit).is_some() {
+                server = server.with_guardrails(rate_limit, 5);
+            }
+
+            let token_limit = budget.or_else(|| loaded_policy.as_ref().and_then(|p| p.token_budget));
+            if let Some(limit) = token_limit {
+                server = server.with_token_budget(limit);
+            }
+
+            if !extra_bins.is_empty() {
+                server.add_tool(tools::create_shell_exec_tool_with_allowlist(extra_bins));
             }
 
             if let Some(p) = plugin {
@@ -169,6 +268,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(manifest_path) = manifest {
                 let custom_tools = load_manifest_tools(&PathBuf::from(manifest_path))?;
                 server.add_tools(custom_tools);
+            }
+
+            if let Some(rec_path) = record {
+                server = server.with_recorder(intermcp::SessionRecorder::new(std::path::Path::new(&rec_path))?);
+            }
+
+            if let Some(audit_path) = audit_log {
+                server = server.with_smac(intermcp::SmacLogger::new(std::path::Path::new(&audit_path))?);
+            }
+
+            if let Some(tools_str) = time_lock {
+                let tools: Vec<String> = tools_str.split(',').map(|s| s.trim().to_string()).collect();
+                server = server.with_time_locked_vault(intermcp::TimeLockedVault::new(tools, 20));
             }
 
             if smart_discovery {
@@ -183,11 +295,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     HttpServerConfig {
                         addr,
                         auth_token: token,
+                        cors_origin,
+                        max_conns: loaded_policy.and_then(|p| p.http_max_conns),
                     },
                 )
                 .await?;
             } else {
                 server.run_stdio().await?;
+            }
+        }
+        Commands::Replay { trace } => {
+            println!("\n▶️ Replaying session flight trace from '{}'...", trace);
+            let server = intermcp::create_default_server();
+            let summary = intermcp::SessionReplayer::replay(std::path::Path::new(&trace), &server).await?;
+            println!("📊 Replay complete:");
+            println!("   • Total calls processed: {}", summary.total_calls);
+            println!("   • Matched responses: {}", summary.matched);
+            println!("   • Mismatches: {}", summary.mismatched);
+            if !summary.errors.is_empty() {
+                println!("\n⚠️ Mismatch details:");
+                for e in summary.errors {
+                    println!("   - {}", e);
+                }
+            } else {
+                println!("✅ 100% deterministic trace replay verified!");
+            }
+        }
+        Commands::VerifyAudit { log } => {
+            println!("\n🔐 Cryptographically verifying SMAC audit chain '{}'...", log);
+            match intermcp::verify_smac_log(std::path::Path::new(&log)) {
+                Ok(count) => {
+                    println!("✅ SMAC Audit Chain verified! {} tamper-evident records authenticated.", count);
+                }
+                Err(e) => {
+                    eprintln!("❌ Tampering or chain corruption detected: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Setup { all: _ } => {
@@ -222,6 +365,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 HttpServerConfig {
                     addr,
                     auth_token: None,
+                    cors_origin: None,
+                    max_conns: None,
                 },
             )
             .await?;

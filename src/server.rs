@@ -1,17 +1,68 @@
+use aho_corasick::AhoCorasick;
+use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, error, info};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
 
 use crate::cache::ToolCache;
 use crate::error::FastMcpError;
 use crate::guardrails::GuardrailPolicy;
 use crate::prompt::Prompt;
 use crate::protocol::*;
+use crate::record::{FrameDirection, SessionRecorder};
 use crate::resource::Resource;
+use crate::smac::SmacLogger;
 use crate::tool::Tool;
+use crate::vault_lock::TimeLockedVault;
+
+static GLOBAL_LOG_LEVEL: AtomicUsize = AtomicUsize::new(2);
+
+pub fn mask_secrets(text: &str) -> String {
+    let sensitive_keys = [
+        "API_KEY",
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PRIVATE_KEY",
+        "JWT",
+        "BEARER",
+        "COOKIE",
+        "SESSION",
+        "DSN",
+        "CONNECTION_STRING",
+        "MNEMONIC",
+        "SEED",
+        "WALLET",
+        "OAUTH",
+        "REFRESH",
+        "CLIENT_SECRET",
+        "SIGNING",
+    ];
+    let mut patterns = Vec::new();
+    for (k, v) in std::env::vars() {
+        let k_upper = k.to_uppercase();
+        if v.len() >= 8 && sensitive_keys.iter().any(|s| k_upper.contains(s)) {
+            patterns.push(v);
+        }
+    }
+    if patterns.is_empty() {
+        return text.to_string();
+    }
+
+    patterns.sort_by_key(|p| std::cmp::Reverse(p.len()));
+
+    if let Ok(matcher) = AhoCorasick::builder().build(&patterns) {
+        let replacements = vec!["[REDACTED_BY_INTERMCP]"; patterns.len()];
+        matcher.replace_all(text, &replacements)
+    } else {
+        text.to_string()
+    }
+}
 
 pub struct Server {
     name: String,
@@ -21,6 +72,10 @@ pub struct Server {
     prompts: HashMap<String, Arc<dyn Prompt>>,
     cache: Option<Arc<ToolCache>>,
     guardrail: Option<Arc<GuardrailPolicy>>,
+    cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    recorder: Option<SessionRecorder>,
+    smac: Option<Arc<SmacLogger>>,
+    vault_lock: Option<Arc<TimeLockedVault>>,
 }
 
 impl Server {
@@ -33,11 +88,39 @@ impl Server {
             prompts: HashMap::new(),
             cache: None,
             guardrail: None,
+            cancellations: Arc::new(RwLock::new(HashMap::new())),
+            recorder: None,
+            smac: None,
+            vault_lock: None,
         }
+    }
+
+    pub fn with_recorder(mut self, recorder: SessionRecorder) -> Self {
+        self.recorder = Some(recorder);
+        self
+    }
+
+    pub fn with_smac(mut self, smac: SmacLogger) -> Self {
+        self.smac = Some(Arc::new(smac));
+        self
+    }
+
+    pub fn with_time_locked_vault(mut self, vault: TimeLockedVault) -> Self {
+        self.vault_lock = Some(Arc::new(vault));
+        self
+    }
+
+    pub fn vault_lock(&self) -> Option<Arc<TimeLockedVault>> {
+        self.vault_lock.clone()
     }
 
     pub fn with_cache(mut self, ttl: Duration) -> Self {
         self.cache = Some(Arc::new(ToolCache::new(ttl)));
+        self
+    }
+
+    pub fn with_cache_bytes(mut self, ttl: Duration, max_bytes: usize) -> Self {
+        self.cache = Some(Arc::new(ToolCache::with_max_bytes(ttl, max_bytes)));
         self
     }
 
@@ -110,10 +193,41 @@ impl Server {
         let req_id = match req.id {
             Some(id) => id,
             None => {
-                debug!("Received notification: method={}", req.method);
+                match req.method.as_str() {
+                    "notifications/initialized" => {
+                        debug!("Client initialized notification acknowledged");
+                    }
+                    "notifications/cancelled" => {
+                        if let Some(params) = req.params {
+                            if let Some(target_id) = params.get("requestId") {
+                                let id_str = target_id.to_string();
+                                if let Some(token) = self.cancellations.read().get(&id_str) {
+                                    token.cancel();
+                                }
+                            }
+                        }
+                    }
+                    "shutdown" => {
+                        if let Some(guardrail) = &self.guardrail {
+                            guardrail.reset();
+                        }
+                    }
+                    _ => {
+                        debug!("Received notification: method={}", req.method);
+                    }
+                }
                 return None;
             }
         };
+
+        if req.jsonrpc != "2.0" {
+            return Some(JsonRpcResponse::error(
+                req_id,
+                -32600,
+                "Invalid Request: jsonrpc must be '2.0'".into(),
+                None,
+            ));
+        }
 
         match req.method.as_str() {
             "initialize" => {
@@ -139,7 +253,64 @@ impl Server {
             }
             "ping" => Some(JsonRpcResponse::success(req_id, json!({}))),
 
-            // --- Tools ---
+            "logging/setLevel" => {
+                let level_str = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("level"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("info");
+
+                let numeric_level = match level_str.to_lowercase().as_str() {
+                    "error" => 0,
+                    "warn" => 1,
+                    "info" => 2,
+                    "debug" => 3,
+                    "trace" => 4,
+                    _ => 2,
+                };
+                GLOBAL_LOG_LEVEL.store(numeric_level, Ordering::Relaxed);
+                Some(JsonRpcResponse::success(req_id, json!({})))
+            }
+
+            "completion/complete" => {
+                let params = req.params.unwrap_or(Value::Null);
+                let query = params
+                    .get("argument")
+                    .and_then(|a| a.get("value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let mut completions = Vec::new();
+                for (name, tool) in &self.tools {
+                    if name.contains(query) || tool.description().contains(query) {
+                        completions.push(name.clone());
+                    }
+                }
+                for uri in self.resources.keys() {
+                    if uri.contains(query) {
+                        completions.push(uri.clone());
+                    }
+                }
+                for name in self.prompts.keys() {
+                    if name.contains(query) {
+                        completions.push(name.clone());
+                    }
+                }
+
+                let total = completions.len();
+                Some(JsonRpcResponse::success(
+                    req_id,
+                    json!({
+                        "completion": {
+                            "values": completions,
+                            "total": total,
+                            "hasMore": false
+                        }
+                    }),
+                ))
+            }
+
             "tools/list" => {
                 let definitions: Vec<ToolDefinition> =
                     self.tools.values().map(|tool| tool.definition()).collect();
@@ -154,7 +325,6 @@ impl Server {
 
                 match tool_name {
                     Some(name) => {
-                        // 1. Guardrail Check (Loop breaker & rate limiting)
                         if let Some(guardrail) = &self.guardrail {
                             if let Err(e) = guardrail.check_call(name, &arguments) {
                                 let call_err = CallToolResult::error(e.to_string());
@@ -162,9 +332,25 @@ impl Server {
                             }
                         }
 
+                        if let Some(vault) = &self.vault_lock {
+                            match vault.check_or_wait(name, &arguments).await {
+                                Ok(true) => {},
+                                Ok(false) => {
+                                    let call_err = CallToolResult::error(format!(
+                                        "Time-Locked Vault: Execution of '{}' was vetoed or timed out waiting for supervisor approval.",
+                                        name
+                                    ));
+                                    return Some(JsonRpcResponse::success(req_id, json!(call_err)));
+                                }
+                                Err(e) => {
+                                    let call_err = CallToolResult::error(e.to_string());
+                                    return Some(JsonRpcResponse::success(req_id, json!(call_err)));
+                                }
+                            }
+                        }
+
                         match self.tools.get(name) {
                             Some(tool) => {
-                                // Micro-cache Check (only for deterministic, read-only tools marked cacheable)
                                 if tool.is_cacheable() {
                                     if let Some(cache) = &self.cache {
                                         if let Some(cached_val) = cache.get(name, &arguments) {
@@ -176,26 +362,88 @@ impl Server {
                                     }
                                 }
 
-                                match tool.execute(arguments.clone()).await {
+                                let cancel_token = CancellationToken::new();
+                                let cancel_key = req_id.to_string();
+                                self.cancellations
+                                    .write()
+                                    .insert(cancel_key.clone(), cancel_token.clone());
+
+                                let tool_clone = Arc::clone(tool);
+                                let args_clone = arguments.clone();
+
+                                let task = tokio::spawn(async move {
+                                    tool_clone.execute(args_clone).await
+                                });
+
+                                let execution_result = tokio::select! {
+                                    _ = cancel_token.cancelled() => {
+                                        self.cancellations.write().remove(&cancel_key);
+                                        return Some(JsonRpcResponse::error(
+                                            req_id,
+                                            -32000,
+                                            "Request cancelled by client".into(),
+                                            None,
+                                        ));
+                                    }
+                                    res = task => {
+                                        self.cancellations.write().remove(&cancel_key);
+                                        match res {
+                                            Ok(call_res) => call_res,
+                                            Err(join_err) => {
+                                                if join_err.is_panic() {
+                                                    return Some(JsonRpcResponse::error(
+                                                        req_id,
+                                                        -32603,
+                                                        "internal tool panic".into(),
+                                                        None,
+                                                    ));
+                                                } else {
+                                                    return Some(JsonRpcResponse::error(
+                                                        req_id,
+                                                        -32000,
+                                                        format!("Tool task failed: {}", join_err),
+                                                        None,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+
+                                match execution_result {
                                     Ok(mut tool_result) => {
-                                        // 2. Secret Shield Vault Redaction & Token Budget Sentinel
                                         for item in &mut tool_result.content {
-                                            if let ContentItem::Text { text } = item {
-                                                *text = mask_known_secrets(text);
-                                                if let Some(guardrail) = &self.guardrail {
-                                                    if let Err(e) = guardrail.record_output(text) {
-                                                        let call_err =
-                                                            CallToolResult::error(e.to_string());
-                                                        return Some(JsonRpcResponse::success(
-                                                            req_id,
-                                                            json!(call_err),
-                                                        ));
+                                            match item {
+                                                ContentItem::Text { text } => {
+                                                    *text = mask_secrets(text);
+                                                    if let Some(guardrail) = &self.guardrail {
+                                                        if let Err(e) =
+                                                            guardrail.record_output(text)
+                                                        {
+                                                            let call_err =
+                                                                CallToolResult::error(e.to_string());
+                                                            return Some(JsonRpcResponse::success(
+                                                                req_id,
+                                                                json!(call_err),
+                                                            ));
+                                                        }
                                                     }
+                                                }
+                                                ContentItem::Image { data, mime_type } => {
+                                                    *data = mask_secrets(data);
+                                                    *mime_type = mask_secrets(mime_type);
+                                                }
+                                                ContentItem::Resource { resource } => {
+                                                    resource.text = mask_secrets(&resource.text);
+                                                    resource.uri = mask_secrets(&resource.uri);
                                                 }
                                             }
                                         }
 
                                         let json_res = json!(tool_result);
+                                        if let Some(smac) = &self.smac {
+                                            smac.record(name, &arguments, &json_res);
+                                        }
                                         if tool.is_cacheable() {
                                             if let Some(cache) = &self.cache {
                                                 cache.set(name, &arguments, json_res.clone(), None);
@@ -232,7 +480,6 @@ impl Server {
                 }
             }
 
-            // --- Resources ---
             "resources/list" => {
                 let definitions: Vec<ResourceDefinition> = self
                     .resources
@@ -278,7 +525,6 @@ impl Server {
                 }
             }
 
-            // --- Prompts ---
             "prompts/list" => {
                 let definitions: Vec<PromptDefinition> =
                     self.prompts.values().map(|p| p.definition()).collect();
@@ -340,69 +586,163 @@ impl Server {
             return None;
         }
 
-        match serde_json::from_str::<JsonRpcRequest>(trimmed) {
-            Ok(req) => {
-                if let Some(resp) = self.handle_request(req).await {
-                    match serde_json::to_string(&resp) {
-                        Ok(json_str) => Some(json_str),
-                        Err(e) => {
-                            error!("Failed to serialize JSON-RPC response: {}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
+        if let Some(rec) = &self.recorder {
+            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                rec.record(FrameDirection::Inbound, &val);
+            }
+        }
+
+        let resp_opt = self.process_raw_message(trimmed).await;
+
+        if let Some(ref resp_str) = resp_opt {
+            if let Some(rec) = &self.recorder {
+                if let Ok(val) = serde_json::from_str::<Value>(resp_str) {
+                    rec.record(FrameDirection::Outbound, &val);
                 }
             }
-            Err(e) => {
-                error!("Invalid JSON-RPC request: {}", e);
-                let err_resp = JsonRpcResponse::error(
-                    Value::Null,
-                    -32700,
-                    format!("Parse error: {}", e),
-                    None,
-                );
-                serde_json::to_string(&err_resp).ok()
+        }
+
+        resp_opt
+    }
+
+    async fn process_raw_message(&self, trimmed: &str) -> Option<String> {
+        if trimmed.starts_with('[') {
+            let parsed: Result<Vec<Value>, _> = serde_json::from_str(trimmed);
+            match parsed {
+                Ok(items) => {
+                    if items.is_empty() {
+                        let err = JsonRpcResponse::error(
+                            Value::Null,
+                            -32600,
+                            "Invalid Request: empty batch".into(),
+                            None,
+                        );
+                        return serde_json::to_string(&err).ok();
+                    }
+
+                    let mut responses = Vec::new();
+                    for item in items {
+                        let id = item.get("id").cloned().unwrap_or(Value::Null);
+                        let jsonrpc = item.get("jsonrpc").and_then(|v| v.as_str());
+                        if jsonrpc != Some("2.0") {
+                            responses.push(JsonRpcResponse::error(
+                                id,
+                                -32600,
+                                "Invalid Request: jsonrpc must be '2.0'".into(),
+                                None,
+                            ));
+                            continue;
+                        }
+
+                        match serde_json::from_value::<JsonRpcRequest>(item) {
+                            Ok(req) => {
+                                if let Some(resp) = self.handle_request(req).await {
+                                    responses.push(resp);
+                                }
+                            }
+                            Err(e) => {
+                                responses.push(JsonRpcResponse::error(
+                                    id,
+                                    -32600,
+                                    format!("Invalid Request: {}", e),
+                                    None,
+                                ));
+                            }
+                        }
+                    }
+
+                    if responses.is_empty() {
+                        None
+                    } else {
+                        serde_json::to_string(&responses).ok()
+                    }
+                }
+                Err(e) => {
+                    let err = JsonRpcResponse::error(
+                        Value::Null,
+                        -32700,
+                        format!("Parse error: {}", e),
+                        None,
+                    );
+                    serde_json::to_string(&err).ok()
+                }
+            }
+        } else {
+            let parsed: Result<Value, _> = serde_json::from_str(trimmed);
+            match parsed {
+                Ok(val) => {
+                    let id = val.get("id").cloned().unwrap_or(Value::Null);
+                    let jsonrpc = val.get("jsonrpc").and_then(|v| v.as_str());
+                    if jsonrpc != Some("2.0") {
+                        let err = JsonRpcResponse::error(
+                            id,
+                            -32600,
+                            "Invalid Request: jsonrpc must be '2.0'".into(),
+                            None,
+                        );
+                        return serde_json::to_string(&err).ok();
+                    }
+
+                    match serde_json::from_value::<JsonRpcRequest>(val) {
+                        Ok(req) => {
+                            if let Some(resp) = self.handle_request(req).await {
+                                serde_json::to_string(&resp).ok()
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            let err = JsonRpcResponse::error(
+                                id,
+                                -32600,
+                                format!("Invalid Request: {}", e),
+                                None,
+                            );
+                            serde_json::to_string(&err).ok()
+                        }
+                    }
+                }
+                Err(e) => {
+                    let err = JsonRpcResponse::error(
+                        Value::Null,
+                        -32700,
+                        format!("Parse error: {}", e),
+                        None,
+                    );
+                    serde_json::to_string(&err).ok()
+                }
             }
         }
     }
 
     pub async fn run_stdio(&self) -> Result<(), FastMcpError> {
-        info!(
-            "Starting intermcp stdio engine: {} v{} ({} tools, {} resources, {} prompts)",
-            self.name,
-            self.version,
-            self.tools.len(),
-            self.resources.len(),
-            self.prompts.len()
-        );
+        info!("InterMCP server '{}' running on stdio", self.name);
 
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
         let mut reader = BufReader::new(stdin).lines();
 
-        while let Some(line) = reader.next_line().await? {
-            if let Some(response_line) = self.handle_raw_message(&line).await {
-                stdout.write_all(response_line.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
+        while let Some(line) = reader
+            .next_line()
+            .await
+            .map_err(|e| FastMcpError::Internal(e.to_string()))?
+        {
+            if let Some(response_str) = self.handle_raw_message(&line).await {
+                stdout
+                    .write_all(response_str.as_bytes())
+                    .await
+                    .map_err(|e| FastMcpError::Internal(e.to_string()))?;
+                stdout
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| FastMcpError::Internal(e.to_string()))?;
+                stdout
+                    .flush()
+                    .await
+                    .map_err(|e| FastMcpError::Internal(e.to_string()))?;
             }
         }
 
-        info!("intermcp stdio stream closed cleanly.");
         Ok(())
     }
-}
-
-fn mask_known_secrets(text: &str) -> String {
-    let sensitive_keys = ["API_KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE_KEY"];
-    let mut masked = text.to_string();
-    for (k, v) in std::env::vars() {
-        let k_upper = k.to_uppercase();
-        if v.len() >= 8 && sensitive_keys.iter().any(|s| k_upper.contains(s)) && masked.contains(&v)
-        {
-            masked = masked.replace(&v, "[REDACTED_BY_INTERMCP]");
-        }
-    }
-    masked
 }
