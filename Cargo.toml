@@ -1,0 +1,39 @@
+[package]
+name = "intermcp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Bharath B R <bharathcoorg7@gmail.com>"]
+description = "Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer and open for all"
+license = "MIT"
+repository = "https://github.com/Bharathcoorg/intermcp"
+keywords = ["mcp", "model-context-protocol", "ai", "claude", "interlayer"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+async-trait = "0.1"
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.10"
+
+[[bin]]
+name = "intermcp"
+path = "src/main.rs"
+
+[lib]
+name = "intermcp"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
