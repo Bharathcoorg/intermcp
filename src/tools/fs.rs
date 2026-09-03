@@ -41,6 +41,12 @@ pub fn create_fs_read_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                     )));
                 }
 
+                if let Ok(sym_meta) = safe_path.symlink_metadata() {
+                    if sym_meta.file_type().is_symlink() {
+                        return Ok(CallToolResult::error("Security error: Symlink access is prohibited".to_string()));
+                    }
+                }
+
                 // Protect against out-of-memory crashes on massive files (> 10MB)
                 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
                 if let Ok(metadata) = safe_path.metadata() {
@@ -97,6 +103,14 @@ pub fn create_fs_write_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                     Ok(p) => p,
                     Err(e) => return Ok(CallToolResult::error(e.to_string())),
                 };
+
+                if safe_path.exists() {
+                    if let Ok(sym_meta) = safe_path.symlink_metadata() {
+                        if sym_meta.file_type().is_symlink() {
+                            return Ok(CallToolResult::error("Security error: Cannot overwrite symlink target".to_string()));
+                        }
+                    }
+                }
 
                 if let Some(parent) = safe_path.parent() {
                     let _ = fs::create_dir_all(parent);
@@ -274,7 +288,7 @@ fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize) {
                 }
 
                 // Skip credential or secret files protected by Secret Shield
-                if SandboxPolicy::is_sensitive_path(&p) {
+                if SandboxPolicy::is_sensitive_path_default(&p) {
                     continue;
                 }
 

@@ -3,6 +3,8 @@ pub mod git;
 pub mod gravity;
 pub mod system;
 
+pub use system::{create_shell_exec_tool, create_shell_exec_tool_with_allowlist, validate_shell_command};
+
 use crate::sandbox::SandboxPolicy;
 use crate::tool::Tool;
 

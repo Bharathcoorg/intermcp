@@ -1,17 +1,17 @@
 use crate::error::FastMcpError;
-use std::collections::HashMap;
-use std::sync::RwLock;
+use parking_lot::RwLock;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// Autonomous AI Agent Loop Breaker & Cost Guardrail
-/// Prevents runaway autonomous agents from executing infinite loops or draining API budgets.
 pub struct GuardrailPolicy {
     max_calls_per_minute: u32,
     loop_detection_threshold: u32,
     max_session_chars: Option<usize>,
-    cumulative_chars: RwLock<usize>,
+    char_history: RwLock<VecDeque<(Instant, usize)>>,
     history: RwLock<HashMap<String, Vec<Instant>>>,
     last_signature: RwLock<Option<(String, u32)>>,
+    prune_counter: AtomicU64,
 }
 
 impl GuardrailPolicy {
@@ -20,39 +20,66 @@ impl GuardrailPolicy {
             max_calls_per_minute,
             loop_detection_threshold,
             max_session_chars: None,
-            cumulative_chars: RwLock::new(0),
+            char_history: RwLock::new(VecDeque::new()),
             history: RwLock::new(HashMap::new()),
             last_signature: RwLock::new(None),
+            prune_counter: AtomicU64::new(0),
         }
     }
 
     pub fn default_policy() -> Self {
-        Self::new(60, 5) // 60 calls/min, max 5 consecutive identical calls
+        Self::new(60, 5)
     }
 
     pub fn with_token_budget(mut self, estimated_tokens: usize) -> Self {
-        // Approximate 4 chars per token
-        self.max_session_chars = Some(estimated_tokens * 4);
+        self.max_session_chars = Some(estimated_tokens.saturating_mul(4));
+        self
+    }
+
+    pub fn with_char_budget(mut self, max_chars: usize) -> Self {
+        self.max_session_chars = Some(max_chars);
         self
     }
 
     pub fn record_output(&self, text: &str) -> Result<(), FastMcpError> {
-        if let Some(limit) = self.max_session_chars {
-            if let Ok(mut total) = self.cumulative_chars.write() {
-                *total += text.len();
-                if *total > limit {
-                    return Err(FastMcpError::ToolExecution(format!(
-                        "🚨 InterMCP Budget Sentinel: Session token limit reached (exceeded ~{} estimated tokens). Execution paused to prevent runaway API spend.",
-                        *total / 4
-                    )));
+        if let Some(budget) = self.max_session_chars {
+            let now = Instant::now();
+            let window_start = now - Duration::from_secs(3600);
+
+            let mut history = self.char_history.write();
+            while let Some(&(time, _)) = history.front() {
+                if time < window_start {
+                    history.pop_front();
+                } else {
+                    break;
                 }
             }
+
+            let current_total: usize = history.iter().map(|(_, len)| *len).sum();
+            let new_chars = text.len();
+
+            if current_total.saturating_add(new_chars) > budget {
+                return Err(FastMcpError::ToolExecution(format!(
+                    "InterMCP Budget Sentinel: Cumulative output tokens ({} chars) reached session limit ({} chars). Execution paused to prevent runaway costs.",
+                    current_total.saturating_add(new_chars), budget
+                )));
+            }
+
+            history.push_back((now, new_chars));
         }
         Ok(())
     }
 
     pub fn estimated_tokens_used(&self) -> usize {
-        self.cumulative_chars.read().map(|t| *t / 4).unwrap_or(0)
+        let now = Instant::now();
+        let window_start = now - Duration::from_secs(3600);
+        let history = self.char_history.read();
+        let active_chars: usize = history
+            .iter()
+            .filter(|(t, _)| *t >= window_start)
+            .map(|(_, len)| *len)
+            .sum();
+        active_chars / 4
     }
 
     pub fn check_call(
@@ -63,45 +90,54 @@ impl GuardrailPolicy {
         let now = Instant::now();
         let one_minute_ago = now - Duration::from_secs(60);
 
-        // 1. Velocity rate limiting
-        if let Ok(mut hist) = self.history.write() {
-            let timestamps = hist.entry(tool_name.to_string()).or_insert_with(Vec::new);
-            timestamps.retain(|&t| t > one_minute_ago);
+        let count = self.prune_counter.fetch_add(1, Ordering::Relaxed);
+        let mut hist = self.history.write();
 
-            if timestamps.len() >= self.max_calls_per_minute as usize {
-                return Err(FastMcpError::ToolExecution(format!(
-                    "🚨 InterMCP Guardrail Triggered: Tool '{}' exceeded rate limit of {} calls/min. Execution paused to protect API budget.",
-                    tool_name, self.max_calls_per_minute
-                )));
-            }
-
-            timestamps.push(now);
+        if count.is_multiple_of(100) {
+            hist.retain(|_, timestamps| {
+                timestamps.retain(|&t| t > one_minute_ago);
+                !timestamps.is_empty()
+            });
         }
 
-        // 2. Infinite consecutive loop detection
+        let timestamps = hist.entry(tool_name.to_string()).or_default();
+        timestamps.retain(|&t| t > one_minute_ago);
+
+        if timestamps.len() >= self.max_calls_per_minute as usize {
+            return Err(FastMcpError::ToolExecution(format!(
+                "InterMCP Guardrail Triggered: Tool '{}' exceeded rate limit of {} calls/min. Execution paused to protect API budget.",
+                tool_name, self.max_calls_per_minute
+            )));
+        }
+
+        timestamps.push(now);
+
         let signature = format!("{}:{}", tool_name, arguments);
-        if let Ok(mut last) = self.last_signature.write() {
-            let count = match &*last {
-                Some((prev_sig, c)) if prev_sig == &signature => c + 1,
-                _ => 1,
-            };
+        let mut last = self.last_signature.write();
+        let consecutive_count = match &*last {
+            Some((prev_sig, c)) if prev_sig == &signature => c + 1,
+            _ => 1,
+        };
 
-            if count > self.loop_detection_threshold {
-                return Err(FastMcpError::ToolExecution(format!(
-                    "🛑 InterMCP Loop Breaker: Infinite loop detected! Tool '{}' was invoked with identical parameters {} times consecutively. Execution halted.",
-                    tool_name, count
-                )));
-            }
-
-            *last = Some((signature, count));
+        if consecutive_count > self.loop_detection_threshold {
+            return Err(FastMcpError::ToolExecution(format!(
+                "InterMCP Loop Breaker: Infinite loop detected! Tool '{}' was invoked with identical parameters {} times consecutively. Execution halted.",
+                tool_name, consecutive_count
+            )));
         }
+
+        *last = Some((signature, consecutive_count));
 
         Ok(())
     }
 
     pub fn reset_signature(&self, _tool_name: &str, _arguments: &serde_json::Value) {
-        if let Ok(mut last) = self.last_signature.write() {
-            *last = None;
-        }
+        *self.last_signature.write() = None;
+    }
+
+    pub fn reset(&self) {
+        self.history.write().clear();
+        self.char_history.write().clear();
+        *self.last_signature.write() = None;
     }
 }

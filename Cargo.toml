@@ -11,6 +11,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
+tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 tracing = "0.1"
@@ -18,10 +19,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive"] }
 async-trait = "0.1"
 thiserror = "1.0"
+aho-corasick = "1.1"
+dunce = "1.0"
+subtle = "2.5"
+tempfile = "3.10"
+toml = "0.8"
+parking_lot = "0.12"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4"
-tempfile = "3.10"
 
 [[bin]]
 name = "intermcp"
