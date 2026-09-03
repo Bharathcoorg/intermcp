@@ -55,8 +55,24 @@ impl SandboxPolicy {
         self
     }
 
-    /// Check if a path targets a credential or private key file
+    /// Check if a path targets a credential, private key, or sensitive directory (.git, .ssh, .aws)
     pub fn is_sensitive_path(path: &Path) -> bool {
+        // 1. Check for sensitive directory segments
+        for component in path.components() {
+            if let std::path::Component::Normal(c) = component {
+                let segment = c.to_string_lossy().to_lowercase();
+                if segment == ".ssh"
+                    || segment == ".aws"
+                    || segment == ".git"
+                    || segment == ".gnupg"
+                    || segment == ".docker"
+                {
+                    return true;
+                }
+            }
+        }
+
+        // 2. Check for sensitive file names and extensions
         if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
             let lower = file_name.to_lowercase();
             for sensitive in SENSITIVE_FILE_NAMES {

@@ -273,6 +273,11 @@ fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize) {
                     }
                 }
 
+                // Skip credential or secret files protected by Secret Shield
+                if SandboxPolicy::is_sensitive_path(&p) {
+                    continue;
+                }
+
                 // Skip files larger than 2MB to prevent memory exhaustion and UI lag
                 if let Ok(meta) = entry.metadata() {
                     if meta.len() > 2 * 1024 * 1024 {

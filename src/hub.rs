@@ -41,7 +41,8 @@ impl UpstreamProcess {
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| {
             FastMcpError::ToolExecution(format!(

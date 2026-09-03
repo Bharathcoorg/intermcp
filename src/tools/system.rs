@@ -122,19 +122,34 @@ fn is_destructive_command(cmd: &str) -> Option<&'static str> {
     }
 
     // Root / system recursive deletions
-    if (trimmed.contains("rm ") || trimmed.contains("rmdir "))
+    if (trimmed.contains("rm ")
+        || trimmed.contains("rmdir ")
+        || trimmed.contains("del ")
+        || trimmed.contains("remove-item"))
         && (trimmed.contains("-rf /")
             || trimmed.contains("-rf /*")
             || trimmed.contains("-rf ~")
             || trimmed.contains("-fr /")
+            || trimmed.contains("-r -f /")
+            || trimmed.contains("-f -r /")
+            || trimmed.contains("--recursive")
             || trimmed.contains("/s /q c:\\")
-            || trimmed.contains("/s /q %systemdrive%"))
+            || trimmed.contains("/s /q %systemdrive%")
+            || trimmed.contains("/f /s /q")
+            || (trimmed.contains("remove-item")
+                && trimmed.contains("-recurse")
+                && (trimmed.contains("c:\\") || trimmed.contains("/ "))))
     {
         return Some("Destructive root filesystem deletion detected");
     }
 
     // Disk formatting or raw device overwrites
-    if trimmed.starts_with("mkfs") || (trimmed.contains("dd if=") && trimmed.contains("of=/dev/")) {
+    if trimmed.starts_with("mkfs")
+        || trimmed.starts_with("format c:")
+        || trimmed.starts_with("format d:")
+        || trimmed.contains("format-volume")
+        || (trimmed.contains("dd if=") && trimmed.contains("of=/dev/"))
+    {
         return Some("Raw disk format/overwrite command detected");
     }
 
