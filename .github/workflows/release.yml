@@ -21,7 +21,7 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: intermcp
             asset_name: intermcp-darwin-aarch64.tar.gz
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: intermcp
             asset_name: intermcp-darwin-x86_64.tar.gz
@@ -63,6 +63,8 @@ jobs:
     name: Publish GitHub Release
     needs: build-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
