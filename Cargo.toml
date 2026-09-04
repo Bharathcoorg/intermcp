@@ -7,8 +7,8 @@ description = "Ultra-fast, safe Model Context Protocol (MCP) engine and multiple
 license = "MIT"
 repository = "https://github.com/Bharathcoorg/intermcp"
 rust-version = "1.75"
-keywords = ["mcp", "interlayer", "blockchain", "ai", "claude"]
-categories = ["command-line-utilities", "development-tools"]
+keywords = ["mcp", "blockchain", "interlayer", "ai-agents", "security"]
+categories = ["command-line-utilities", "development-tools", "network-programming", "asynchronous"]
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }

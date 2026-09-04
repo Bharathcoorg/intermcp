@@ -21,15 +21,28 @@ classifiers = [
 keywords = [
     "mcp",
     "model-context-protocol",
-    "blockchain",
-    "interlayer",
-    "web3",
+    "mcp-client",
+    "mcp-server",
+    "mcp-runtime",
     "ai",
+    "ai-agents",
     "agentic-ai",
     "autonomous-agents",
+    "function-calling",
+    "tool-calling",
+    "blockchain",
+    "interlayer",
+    "interlayer-blockchain",
+    "web3",
+    "decentralized-ai",
     "claude",
+    "claude-desktop",
     "cursor",
-    "agents"
+    "windsurf",
+    "cline",
+    "llm",
+    "zero-trust",
+    "runtime-security"
 ]
 
 [project.urls]

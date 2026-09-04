@@ -16,11 +16,22 @@
   "keywords": [
     "mcp",
     "model-context-protocol",
+    "mcp-client",
+    "mcp-server",
+    "mcp-runtime",
+    "ai",
+    "ai-agents",
+    "agentic-ai",
+    "autonomous-agents",
     "blockchain",
     "interlayer",
+    "interlayer-blockchain",
     "web3",
-    "ai",
-    "agents"
+    "decentralized-ai",
+    "claude",
+    "cursor",
+    "tool-calling",
+    "zero-trust"
   ],
   "autoload": {
     "psr-4": {
