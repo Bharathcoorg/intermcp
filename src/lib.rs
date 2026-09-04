@@ -21,7 +21,8 @@ pub mod tools;
 pub mod vault_lock;
 
 pub use auto_config::{
-    configure_all_ides, configure_all_ides as auto_configure_all_ides, SetupResult,
+    configure_all_ides, configure_all_ides as auto_configure_all_ides, configure_mcp_json,
+    configure_zed_json, SetupResult,
 };
 pub use cache::ToolCache;
 pub use config::PolicyConfig;

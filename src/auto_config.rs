@@ -61,6 +61,30 @@ pub fn configure_all_ides(binary_path: &str) -> Vec<SetupResult> {
         binary_path,
     ));
 
+    // 8. Antigravity IDE
+    let antigravity_path = get_antigravity_path();
+    results.push(configure_mcp_json(
+        "Antigravity IDE",
+        &antigravity_path,
+        binary_path,
+    ));
+
+    // 9. Kilo Code (VS Code)
+    let kilo_path = get_kilo_path();
+    results.push(configure_mcp_json(
+        "Kilo Code (VS Code)",
+        &kilo_path,
+        binary_path,
+    ));
+
+    // 10. VS Code / Codex
+    let vscode_path = get_vscode_path();
+    results.push(configure_mcp_json(
+        "VS Code / Codex",
+        &vscode_path,
+        binary_path,
+    ));
+
     results
 }
 
@@ -92,7 +116,7 @@ fn safe_backup(config_path: &Path) -> Result<PathBuf, String> {
     Ok(backup_path)
 }
 
-fn configure_mcp_json(ide_name: &str, config_path: &Path, binary_path: &str) -> SetupResult {
+pub fn configure_mcp_json(ide_name: &str, config_path: &Path, binary_path: &str) -> SetupResult {
     let parent = match config_path.parent() {
         Some(p) => p,
         None => {
@@ -211,7 +235,7 @@ fn configure_mcp_json(ide_name: &str, config_path: &Path, binary_path: &str) -> 
     }
 }
 
-fn configure_zed_json(config_path: &Path, binary_path: &str) -> SetupResult {
+pub fn configure_zed_json(config_path: &Path, binary_path: &str) -> SetupResult {
     let parent = match config_path.parent() {
         Some(p) => p,
         None => {
@@ -506,5 +530,93 @@ fn get_continue_path() -> PathBuf {
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         PathBuf::from(home).join(".continue").join("config.json")
+    }
+}
+
+fn get_antigravity_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(userprofile)
+            .join(".gemini")
+            .join("config")
+            .join("mcp_config.json")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join(".gemini")
+            .join("config")
+            .join("mcp_config.json")
+    }
+}
+
+fn get_kilo_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(appdata)
+            .join("Code")
+            .join("User")
+            .join("globalStorage")
+            .join("kilo.kilo-code")
+            .join("settings")
+            .join("mcp_settings.json")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("globalStorage")
+            .join("kilo.kilo-code")
+            .join("settings")
+            .join("mcp_settings.json")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join(".config")
+            .join("Code")
+            .join("User")
+            .join("globalStorage")
+            .join("kilo.kilo-code")
+            .join("settings")
+            .join("mcp_settings.json")
+    }
+}
+
+fn get_vscode_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(appdata)
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join(".config")
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
     }
 }

@@ -96,11 +96,14 @@ enum Commands {
         #[arg(long)]
         key: Option<String>,
     },
-    /// One-Click Auto-Setup: Automatically configure Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Zed, and Continue
+    /// One-Click Auto-Setup: Automatically configure Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Zed, Continue, Antigravity IDE, Kilo Code, and VS Code / Codex
     Setup {
         /// Configure all detected desktop AI agents automatically
         #[arg(short, long, default_value_t = true)]
         all: bool,
+        /// Explicit binary path to configure into IDE configs (defaults to current executable)
+        #[arg(short, long)]
+        binary: Option<String>,
     },
     /// Launch the Live Observability Flight Recorder & Web Dashboard
     Dashboard {
@@ -398,19 +401,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Setup { all: _ } => {
-            let current_exe = std::env::current_exe()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "intermcp".to_string());
+        Commands::Setup { all: _, binary } => {
+            let target_bin = binary.unwrap_or_else(|| {
+                std::env::current_exe()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "intermcp".to_string())
+            });
 
             println!("\n⚡ InterMCP 1-Click Multi-Agent Auto-Configurator");
             println!("============================================================");
             println!(
                 "🔍 Scanning and configuring installed desktop AI environments with:\n   '{}'\n",
-                current_exe
+                target_bin
             );
 
-            let results = auto_configure_all_ides(&current_exe);
+            let results = auto_configure_all_ides(&target_bin);
             for res in results {
                 let status_icon = if res.success { "✅" } else { "❌" };
                 println!("{} {}:", status_icon, res.name);

@@ -42,25 +42,60 @@ The **Model Context Protocol (MCP)** standardizes how language models (Claude De
 
 ---
 
-## ⚡ Quickstart
+## ⚡ 1-Click Installation & Setup
 
-### Option 1: Via Cargo (Rust)
+InterMCP is designed with **zero-friction setup** for developers and teams. No complex toolchains or manual JSON editing required.
+
+### 🌟 1-Click Shell Install (Recommended)
+
+**macOS / Linux / WSL:**
 ```bash
-cargo install intermcp
-intermcp serve
+curl -fsSL https://raw.githubusercontent.com/Bharathcoorg/intermcp/main/install.sh | sh
 ```
 
-### Option 2: Via NPX (Zero Rust setup needed)
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Bharathcoorg/intermcp/main/install.ps1 | iex
+```
+*This downloads the optimized native binary, adds it to your PATH, and automatically configures all detected IDEs in a single step.*
+
+---
+
+### 📦 Alternative Installation Methods
+
+#### Option A: Via NPX (Zero Install)
 ```bash
+# 1-Click auto-configure all detected IDEs
+npx intermcp setup
+
+# Or run stdio server directly
 npx intermcp serve
 ```
 
-### Option 3: 1-Click Multi-IDE Setup
-Configure all installed desktop AI agents automatically:
+#### Option B: Via Cargo (Rust Developers)
 ```bash
-npx intermcp setup
+cargo install intermcp
+intermcp setup
 ```
-This safely inspects and updates the configuration for Claude Desktop, Cursor IDE, Windsurf, and Cline, creating automatic backups of existing settings.
+
+---
+
+## 🎯 Supported IDEs & AI Environments
+
+Running `intermcp setup` automatically detects, safely creates atomic backups (`.json.bak`), and merges configuration into:
+
+| Environment | Supported Config Path | Status |
+| :--- | :--- | :---: |
+| **Google Antigravity IDE** | `~/.gemini/config/mcp_config.json` | ✅ 1-Click Auto |
+| **Cursor IDE** | `~/.cursor/mcp.json` | ✅ 1-Click Auto |
+| **VS Code & Codex** | `Code/User/mcp.json` | ✅ 1-Click Auto |
+| **Kilo Code (VS Code)** | `globalStorage/kilo.kilo-code/settings/mcp_settings.json` | ✅ 1-Click Auto |
+| **Cline (VS Code)** | `globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | ✅ 1-Click Auto |
+| **Roo Code (VS Code)** | `globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json` | ✅ 1-Click Auto |
+| **Claude Desktop** | `Claude/claude_desktop_config.json` | ✅ 1-Click Auto |
+| **Windsurf (Codeium)** | `~/.codeium/windsurf/mcp_config.json` | ✅ 1-Click Auto |
+| **Zed Editor** | `Zed/settings.json` (`context_servers`) | ✅ 1-Click Auto |
+| **Continue.dev** | `~/.continue/config.json` | ✅ 1-Click Auto |
 
 ---
 
