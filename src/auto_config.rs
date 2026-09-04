@@ -2,7 +2,6 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone)]
 pub struct SetupResult {
@@ -89,20 +88,57 @@ pub fn configure_all_ides(binary_path: &str) -> Vec<SetupResult> {
 }
 
 fn atomic_write_json(parent: &Path, target: &Path, content: &str) -> Result<(), String> {
-    let mut temp = NamedTempFile::new_in(parent)
+    let temp_name = format!(
+        ".intermcp_tmp_{}_{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let temp_path = parent.join(temp_name);
+    let mut file = fs::File::create(&temp_path)
         .map_err(|e| format!("Failed to create temporary file for atomic write: {}", e))?;
-    temp.write_all(content.as_bytes())
+    file.write_all(content.as_bytes())
         .map_err(|e| format!("Failed to write to temporary file: {}", e))?;
-    temp.flush()
+    file.flush()
         .map_err(|e| format!("Failed to flush temporary file: {}", e))?;
-    temp.persist(target)
-        .map_err(|e| format!("Atomic rename failed: {}", e))?;
-    Ok(())
+    drop(file);
+
+    fs::rename(&temp_path, target).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        format!("Atomic rename failed: {}", e)
+    })
 }
 
 fn safe_backup(config_path: &Path) -> Result<PathBuf, String> {
+    let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
+    if let Ok(meta) = fs::symlink_metadata(parent) {
+        if meta.file_type().is_symlink() {
+            return Err("Parent directory cannot be a symlink".into());
+        }
+    }
     let backup_path = config_path.with_extension("json.bak");
+    if let Ok(meta) = fs::symlink_metadata(&backup_path) {
+        if meta.file_type().is_symlink() {
+            let _ = fs::remove_file(&backup_path);
+        }
+    }
+    if let Ok(meta) = fs::symlink_metadata(&backup_path) {
+        if meta.file_type().is_symlink() {
+            return Err("Backup destination cannot be a symlink".into());
+        }
+    }
     fs::copy(config_path, &backup_path).map_err(|e| format!("Failed to create backup: {}", e))?;
+
+    if let Ok(meta) = fs::symlink_metadata(&backup_path) {
+        if meta.file_type().is_symlink() {
+            let _ = fs::remove_file(&backup_path);
+            return Err(
+                "Backup destination was manipulated into a symlink during copy. Aborting.".into(),
+            );
+        }
+    }
 
     let original_bytes = fs::read(config_path)
         .map_err(|e| format!("Failed to read original for verification: {}", e))?;
@@ -202,13 +238,19 @@ pub fn configure_mcp_json(ide_name: &str, config_path: &Path, binary_path: &str)
         .or_insert_with(|| json!({}));
 
     if let Some(servers_obj) = mcp_servers.as_object_mut() {
-        servers_obj.insert(
-            "intermcp".to_string(),
-            json!({
-                "command": binary_path,
-                "args": ["serve"]
-            }),
-        );
+        let new_entry = json!({
+            "command": binary_path,
+            "args": ["serve"]
+        });
+        if let Some(existing) = servers_obj.get("intermcp") {
+            if existing != &new_entry {
+                tracing::warn!(
+                    "Overwriting existing 'intermcp' server configuration in {}",
+                    ide_name
+                );
+            }
+        }
+        servers_obj.insert("intermcp".to_string(), new_entry);
     }
 
     match serde_json::to_string_pretty(&config) {
@@ -321,15 +363,18 @@ pub fn configure_zed_json(config_path: &Path, binary_path: &str) -> SetupResult 
         .or_insert_with(|| json!({}));
 
     if let Some(servers_obj) = context_servers.as_object_mut() {
-        servers_obj.insert(
-            "intermcp".to_string(),
-            json!({
-                "command": {
-                    "path": binary_path,
-                    "args": ["serve"]
-                }
-            }),
-        );
+        let new_entry = json!({
+            "command": {
+                "path": binary_path,
+                "args": ["serve"]
+            }
+        });
+        if let Some(existing) = servers_obj.get("intermcp") {
+            if existing != &new_entry {
+                tracing::warn!("Overwriting existing 'intermcp' context server in Zed Editor");
+            }
+        }
+        servers_obj.insert("intermcp".to_string(), new_entry);
     }
 
     match serde_json::to_string_pretty(&config) {

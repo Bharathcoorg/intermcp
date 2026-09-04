@@ -120,3 +120,22 @@ fn test_supply_chain_firewall_detects_schema_drift() {
         .contains("drifted tool 'git_push' definition"));
     assert!(firewall.is_quarantined("git_upstream"));
 }
+
+#[test]
+fn test_supply_chain_firewall_quarantine_persistence() {
+    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let receipts_dir = tmp_dir.path().join("receipts");
+
+    let firewall1 = SupplyChainFirewall::new().with_receipts_dir(&receipts_dir);
+    assert!(!firewall1.is_quarantined("malicious_upstream"));
+    firewall1.quarantine("malicious_upstream");
+    assert!(firewall1.is_quarantined("malicious_upstream"));
+
+    // Ensure quarantine file exists on disk
+    let quarantine_file = receipts_dir.join("quarantine.json");
+    assert!(quarantine_file.exists());
+
+    // A second instance initializing from the same receipts dir must reload the quarantine set
+    let firewall2 = SupplyChainFirewall::new().with_receipts_dir(&receipts_dir);
+    assert!(firewall2.is_quarantined("malicious_upstream"));
+}

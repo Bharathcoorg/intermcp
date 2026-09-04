@@ -104,3 +104,85 @@ fn test_sandbox_root_containment() {
     let outside = PathBuf::from("C:\\Windows\\System32\\calc.exe");
     assert!(policy.validate_path(&outside).is_err());
 }
+
+#[test]
+fn test_symlink_toctou_mitigation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let policy = SandboxPolicy::new(vec![root.clone()]);
+
+    let target = root.join("safe_file.txt");
+    std::fs::write(&target, "initial content").unwrap();
+
+    // 1. Initial validation succeeds
+    let validated = policy.validate_path(&target);
+    assert!(validated.is_ok());
+    let validated_path = validated.unwrap();
+
+    // 2. Simulate TOCTOU race: replace validated target with a symlink
+    let external_dest = tmp.path().join("external_secret.txt");
+    std::fs::write(&external_dest, "confidential").unwrap();
+    let _ = std::fs::remove_file(&target);
+
+    #[cfg(unix)]
+    let sym_result = std::os::unix::fs::symlink(&external_dest, &target);
+    #[cfg(windows)]
+    let sym_result = std::os::windows::fs::symlink_file(&external_dest, &target);
+
+    // 3. Immediately before I/O operation, symlink_metadata check detects the swap
+    if sym_result.is_ok() {
+        let meta = validated_path.symlink_metadata();
+        assert!(meta.is_ok());
+        assert!(meta.unwrap().file_type().is_symlink());
+    }
+}
+
+#[test]
+fn test_symlink_swap_after_canonicalize() {
+    let tmp_root = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp_root.path()).unwrap();
+    let sandbox_dir = root.join("sandbox");
+    std::fs::create_dir_all(&sandbox_dir).unwrap();
+    let policy = SandboxPolicy::new(vec![sandbox_dir.clone()]);
+
+    // a) Benign directory with benign file
+    let sub_dir = sandbox_dir.join("work_dir");
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    let benign_file = sub_dir.join("data.txt");
+    std::fs::write(&benign_file, "benign public content").unwrap();
+
+    // b) Separate directory outside sandbox with sensitive credentials.json
+    let sensitive_dir = root.join("outside_sensitive");
+    std::fs::create_dir_all(&sensitive_dir).unwrap();
+    let creds_file = sensitive_dir.join("credentials.json");
+    std::fs::write(&creds_file, "{\"secret\":\"top-secret-token\"}").unwrap();
+
+    // c) Validate path targeting benign file inside work_dir (should pass)
+    let validated = policy.validate_path(&benign_file);
+    assert!(
+        validated.is_ok(),
+        "Initial validation of benign file inside sandbox must pass"
+    );
+
+    // d) Swap the directory: remove benign file & work_dir, replace with symlink to sensitive_dir
+    let target_swap = sub_dir.clone();
+    std::fs::remove_file(&benign_file).unwrap();
+    std::fs::remove_dir(&sub_dir).unwrap();
+
+    #[cfg(unix)]
+    let sym_res = std::os::unix::fs::symlink(&sensitive_dir, &target_swap);
+    #[cfg(windows)]
+    let sym_res = std::os::windows::fs::symlink_dir(&sensitive_dir, &target_swap);
+
+    if sym_res.is_ok() {
+        // Re-validating the same path after symlink swap must fail
+        let revalidated = policy.validate_path(&benign_file);
+        assert!(
+            revalidated.is_err(),
+            "Re-validation after symlink swap must fail and block escape"
+        );
+    } else {
+        // Fallback if OS denies unprivileged symlink creation: direct validation of sensitive path fails
+        assert!(policy.validate_path(&creds_file).is_err());
+    }
+}

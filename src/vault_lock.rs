@@ -79,7 +79,7 @@ impl TimeLockedVault {
 
         warn!(
             "⏳ TIME-LOCKED VAULT: Approval required for tool '{}' [Approval ID: {}]. Waiting up to {}s.",
-            tool_name,
+            crate::server::redact_for_log(tool_name),
             id,
             self.window.as_secs()
         );
@@ -90,13 +90,15 @@ impl TimeLockedVault {
                 if approved {
                     info!(
                         "✅ Tool '{}' [ID: {}] APPROVED by supervisor",
-                        tool_name, id
+                        crate::server::redact_for_log(tool_name),
+                        id
                     );
                     Ok(true)
                 } else {
                     warn!(
                         "❌ Tool '{}' [ID: {}] REJECTED by supervisor",
-                        tool_name, id
+                        crate::server::redact_for_log(tool_name),
+                        id
                     );
                     Ok(false)
                 }
@@ -109,7 +111,7 @@ impl TimeLockedVault {
                 self.pending.write().remove(&id);
                 warn!(
                     "⌛ Tool '{}' [ID: {}] TIMED OUT after {}s without approval",
-                    tool_name,
+                    crate::server::redact_for_log(tool_name),
                     id,
                     self.window.as_secs()
                 );

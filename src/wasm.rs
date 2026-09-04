@@ -85,6 +85,11 @@ impl WasmModuleValidator {
             while pos < bytes.len() {
                 let byte = bytes[pos];
                 pos += 1;
+                if shift > 28 {
+                    return Err(FastMcpError::ToolExecution(
+                        "Invalid WASM binary: LEB128 integer overflow".into(),
+                    ));
+                }
                 section_len |= ((byte & 0x7F) as usize) << shift;
                 if (byte & 0x80) == 0 {
                     break;
@@ -93,13 +98,56 @@ impl WasmModuleValidator {
             }
 
             if pos + section_len > bytes.len() {
-                break;
+                return Err(FastMcpError::ToolExecution(
+                    "Invalid WASM binary: section length exceeds payload".into(),
+                ));
             }
 
             // Section 5 = Memory Section
             if section_id == 5 && section_len > 0 {
-                // Approximate memory limit check from memory section payload
-                declared_memory = Some(1);
+                let mut mem_pos = pos;
+                let mem_end = pos + section_len;
+
+                // Read vector count of memory types (LEB128)
+                let mut count = 0usize;
+                let mut shift = 0;
+                while mem_pos < mem_end {
+                    let b = bytes[mem_pos];
+                    mem_pos += 1;
+                    count |= ((b & 0x7F) as usize) << shift;
+                    if (b & 0x80) == 0 {
+                        break;
+                    }
+                    shift += 7;
+                    if shift > 28 {
+                        break;
+                    }
+                }
+
+                if count > 0 && mem_pos < mem_end {
+                    // Read limits flag
+                    let _flag = bytes[mem_pos];
+                    mem_pos += 1;
+
+                    // Read initial page limit (LEB128)
+                    let mut initial_pages = 0usize;
+                    let mut shift = 0;
+                    while mem_pos < mem_end {
+                        let b = bytes[mem_pos];
+                        mem_pos += 1;
+                        initial_pages |= ((b & 0x7F) as usize) << shift;
+                        if (b & 0x80) == 0 {
+                            break;
+                        }
+                        shift += 7;
+                        if shift > 28 {
+                            break;
+                        }
+                    }
+                    declared_memory = Some((initial_pages.max(1)) as u32);
+                } else {
+                    declared_memory = Some(1);
+                }
             }
 
             // Section 7 = Export Section
@@ -129,8 +177,12 @@ impl WasmModuleValidator {
     }
 }
 
-/// Sandboxed WebAssembly Tool implementing the MCP Tool trait
-pub struct WasmTool {
+/// Static WebAssembly Module Inspector and Header Validator.
+///
+/// NOTE: This tool validates and inspects WASM module structure (magic header, version,
+/// declared memory pages, and section exports). It is a static inspector and validator stub,
+/// NOT an active runtime WASM bytecode execution sandbox.
+pub struct WasmInspector {
     name: String,
     description: String,
     input_schema: Value,
@@ -139,7 +191,10 @@ pub struct WasmTool {
     invocations: AtomicU64,
 }
 
-impl WasmTool {
+/// Backwards compatibility alias for `WasmInspector`
+pub type WasmTool = WasmInspector;
+
+impl WasmInspector {
     pub fn new(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -173,7 +228,7 @@ impl WasmTool {
 }
 
 #[async_trait]
-impl Tool for WasmTool {
+impl Tool for WasmInspector {
     fn name(&self) -> &str {
         &self.name
     }
@@ -189,13 +244,17 @@ impl Tool for WasmTool {
     async fn execute(&self, arguments: Value) -> Result<CallToolResult, FastMcpError> {
         self.invocations.fetch_add(1, Ordering::Relaxed);
 
-        // Deterministic computational execution simulation within strict memory and time bounds
+        let metadata = WasmModuleValidator::inspect(&self.wasm_bytes, &self.config)?;
+
         let output = json!({
-            "status": "executed_in_wasm_sandbox",
+            "status": "inspected_wasm_module_metadata",
+            "inspector_mode": "static_validation_stub",
             "module_size": self.wasm_bytes.len(),
+            "declared_memory_pages": metadata.declared_memory_pages,
+            "export_count": metadata.export_count,
             "max_memory_pages": self.config.max_memory_pages,
             "arguments_echo": arguments,
-            "sandbox_isolation": "zero_host_filesystem_and_network_access"
+            "note": "Static metadata inspection only. Bytecode execution is not supported in this stub inspector."
         });
 
         Ok(CallToolResult::text(

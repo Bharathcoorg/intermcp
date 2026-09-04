@@ -18,6 +18,8 @@ async fn test_http_missing_host_header_rejected() {
                 auth_token: None,
                 cors_origin: None,
                 max_conns: Some(512),
+                tls_cert: None,
+                tls_key: None,
             },
         )
         .await;
@@ -51,6 +53,8 @@ async fn test_http_unauthorized_before_body() {
                 auth_token: Some("secret-token-xyz".to_string()),
                 cors_origin: None,
                 max_conns: Some(512),
+                tls_cert: None,
+                tls_key: None,
             },
         )
         .await;

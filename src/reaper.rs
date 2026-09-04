@@ -1,4 +1,4 @@
-//! Process reaper and OS job group management to prevent orphaned child processes and zombies.
+use crate::error::FastMcpError;
 
 #[cfg(windows)]
 pub mod windows {
@@ -123,5 +123,73 @@ pub fn configure_child_isolation(cmd: &mut tokio::process::Command) {
             let _ = libc::setpgid(0, 0);
             Ok(())
         });
+    }
+}
+
+/// RAII guard providing cross-platform process group isolation and cleanup.
+pub struct ChildIsolationGuard {
+    #[cfg(windows)]
+    pub job: Option<windows::ProcessJobGroup>,
+    #[cfg(unix)]
+    pub pgid: Option<u32>,
+}
+
+impl ChildIsolationGuard {
+    pub fn new(child: &tokio::process::Child) -> Result<Self, FastMcpError> {
+        Self::try_new(child)
+    }
+
+    pub fn try_new(child: &tokio::process::Child) -> Result<Self, FastMcpError> {
+        #[cfg(windows)]
+        {
+            let job = windows::ProcessJobGroup::new().ok_or_else(|| {
+                FastMcpError::ToolExecution(
+                    "Failed to create Windows Job Object for process isolation".into(),
+                )
+            })?;
+            if let Some(handle) = child.raw_handle() {
+                let assigned = unsafe { job.assign(handle) };
+                if !assigned {
+                    return Err(FastMcpError::ToolExecution(
+                        "Failed to assign child process to Windows Job Object".into(),
+                    ));
+                }
+            } else {
+                return Err(FastMcpError::ToolExecution(
+                    "Missing child process raw handle for Windows Job Object isolation".into(),
+                ));
+            }
+            Ok(Self { job: Some(job) })
+        }
+        #[cfg(unix)]
+        {
+            let pgid = child.id();
+            Ok(Self { pgid })
+        }
+    }
+
+    pub fn kill_group(&self) {
+        #[cfg(unix)]
+        {
+            if let Some(pid) = self.pgid {
+                unsafe {
+                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    pub fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.pgid = None;
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildIsolationGuard {
+    fn drop(&mut self) {
+        self.kill_group();
     }
 }

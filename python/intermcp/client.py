@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from typing import Any, Dict, List, Optional
 
 
@@ -29,6 +30,7 @@ class InterMcpClient:
 
         self.proc: Optional[subprocess.Popen] = None
         self.request_id = 0
+        self._lock = threading.Lock()
 
     def start(self) -> Dict[str, Any]:
         """Start the native InterMCP process and perform MCP 2024-11-05 handshake."""
@@ -44,36 +46,44 @@ class InterMcpClient:
 
         return self.request("initialize", {
             "protocolVersion": "2024-11-05",
-            "clientInfo": {"name": "intermcp-python-sdk", "version": "0.1.0"},
+            "clientInfo": {"name": "intermcp-python-sdk", "version": "0.2.0"},
             "capabilities": {}
         })
 
     def request(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        """Send a standard JSON-RPC 2.0 message and return result."""
-        if not self.proc or not self.proc.stdin or not self.proc.stdout:
-            raise RuntimeError("InterMCP client is not running. Call .start() first.")
+        """Send a standard JSON-RPC 2.0 message and return result.
 
-        self.request_id += 1
-        msg = json.dumps({
-            "jsonrpc": "2.0",
-            "id": self.request_id,
-            "method": method,
-            "params": params or {},
-        }) + "\n"
+        Note on Threading / Concurrency (Finding 17):
+        Stdio-based JSON-RPC requires strict serial request-response framing across
+        standard input/output pipes. `self._lock` serializes requests across multiple threads
+        to prevent interleaving. For high-concurrency async workloads, use the async client
+        or HTTP/SSE transport.
+        """
+        with self._lock:
+            if not self.proc or not self.proc.stdin or not self.proc.stdout:
+                raise RuntimeError("InterMCP client is not running. Call .start() first.")
 
-        self.proc.stdin.write(msg)
-        self.proc.stdin.flush()
+            self.request_id += 1
+            msg = json.dumps({
+                "jsonrpc": "2.0",
+                "id": self.request_id,
+                "method": method,
+                "params": params or {},
+            }) + "\n"
 
-        line = self.proc.stdout.readline()
-        if not line:
-            err = self.proc.stderr.read() if self.proc.stderr else "Unknown error"
-            raise RuntimeError(f"InterMCP engine process exited: {err}")
+            self.proc.stdin.write(msg)
+            self.proc.stdin.flush()
 
-        payload = json.loads(line)
-        if "error" in payload:
-            raise RuntimeError(f"MCP Error {payload['error'].get('code')}: {payload['error'].get('message')}")
+            line = self.proc.stdout.readline()
+            if not line:
+                err = self.proc.stderr.read() if self.proc.stderr else "Unknown error"
+                raise RuntimeError(f"InterMCP engine process exited: {err}")
 
-        return payload.get("result")
+            payload = json.loads(line)
+            if "error" in payload:
+                raise RuntimeError(f"MCP Error {payload['error'].get('code')}: {payload['error'].get('message')}")
+
+            return payload.get("result")
 
     def list_tools(self) -> List[Dict[str, Any]]:
         """List all registered tools."""
@@ -110,13 +120,14 @@ class InterMcpClient:
 
     def stop(self):
         """Cleanly terminate the native runtime."""
-        if self.proc:
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=2)
-            except Exception:
-                self.proc.kill()
-            self.proc = None
+        with self._lock:
+            if self.proc:
+                try:
+                    self.proc.terminate()
+                    self.proc.wait(timeout=2)
+                except Exception:
+                    self.proc.kill()
+                self.proc = None
 
     def __enter__(self):
         self.start()

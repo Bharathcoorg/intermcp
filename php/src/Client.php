@@ -54,11 +54,15 @@ class Client
             2 => ['pipe', 'w'], // stderr
         ];
 
-        $cmd = escapeshellcmd($this->binaryPath) . ' serve';
-        $this->process = proc_open($cmd, $descriptorSpec, $this->pipes);
+        // AUDIT-17: Use array form to avoid shell interpretation of binary path
+        $this->process = proc_open(
+            [$this->binaryPath, 'serve'],
+            $descriptorSpec,
+            $this->pipes
+        );
 
         if (!is_resource($this->process)) {
-            throw new RuntimeException("Failed to spawn InterMCP process with command: {$cmd}");
+            throw new RuntimeException("Failed to spawn InterMCP process: {$this->binaryPath}");
         }
 
         // Complete MCP 2024-11-05 Handshake
@@ -66,7 +70,7 @@ class Client
             'protocolVersion' => '2024-11-05',
             'clientInfo' => [
                 'name' => 'intermcp-php-sdk',
-                'version' => '0.1.0',
+                'version' => '0.2.0',
             ],
             'capabilities' => (object)[],
         ];
@@ -92,8 +96,14 @@ class Client
         fwrite($this->pipes[0], $rawMsg);
         fflush($this->pipes[0]);
 
-        $line = fgets($this->pipes[1]);
-        if ($line === false) {
+        $line = '';
+        while (($chunk = fgets($this->pipes[1])) !== false) {
+            $line .= $chunk;
+            if (substr($chunk, -1) === "\n") {
+                break;
+            }
+        }
+        if ($line === '') {
             $err = stream_get_contents($this->pipes[2]) ?: 'Unknown termination';
             throw new RuntimeException("InterMCP engine exited unexpectedly: {$err}");
         }

@@ -12,42 +12,61 @@ use tracing::{debug, info};
 use crate::cache::ToolCache;
 use crate::error::FastMcpError;
 use crate::guardrails::GuardrailPolicy;
+use crate::policy::{PolicyEngine, ShellPolicyDecision};
 use crate::prompt::Prompt;
 use crate::protocol::*;
 use crate::receipts::{ReceiptBook, ReceiptStatus};
 use crate::record::{FrameDirection, SessionRecorder};
 use crate::resource::Resource;
 use crate::smac::SmacLogger;
+use crate::taint::{SinkCapability, TaintTracker};
 use crate::tool::Tool;
 use crate::vault_lock::TimeLockedVault;
 
 static GLOBAL_LOG_LEVEL: AtomicUsize = AtomicUsize::new(2);
 
+pub const DEFAULT_SECRET_ENV_NAMES: &[&str] = &[
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PRIVATE_KEY",
+    "JWT",
+    "BEARER",
+    "COOKIE",
+    "SESSION",
+    "DSN",
+    "CONNECTION_STRING",
+    "MNEMONIC",
+    "SEED",
+    "WALLET",
+    "OAUTH",
+    "REFRESH",
+    "CLIENT_SECRET",
+    "SIGNING",
+    "TEST_JWT_SECRET",
+    "TEST_BEARER_AUTH",
+    "TEST_CLIENT_SECRET_VAL",
+    "TEST_MNEMONIC_KEY",
+    "TEST_DATABASE_DSN_SECRET",
+];
+
 pub fn mask_secrets(text: &str) -> String {
-    let sensitive_keys = [
-        "API_KEY",
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "PRIVATE_KEY",
-        "JWT",
-        "BEARER",
-        "COOKIE",
-        "SESSION",
-        "DSN",
-        "CONNECTION_STRING",
-        "MNEMONIC",
-        "SEED",
-        "WALLET",
-        "OAUTH",
-        "REFRESH",
-        "CLIENT_SECRET",
-        "SIGNING",
-    ];
+    mask_secrets_with_names(text, DEFAULT_SECRET_ENV_NAMES)
+}
+
+pub fn mask_secrets_with_names<S: AsRef<str>>(text: &str, names: &[S]) -> String {
+    if names.is_empty() {
+        return text.to_string();
+    }
     let mut patterns = Vec::new();
     for (k, v) in std::env::vars() {
         let k_upper = k.to_uppercase();
-        if v.len() >= 8 && sensitive_keys.iter().any(|s| k_upper.contains(s)) {
+        let is_allowed_name = names.iter().any(|n| {
+            let n_upper = n.as_ref().to_uppercase();
+            k_upper == n_upper || k_upper.contains(&n_upper)
+        });
+        if is_allowed_name && v.len() >= 8 {
             patterns.push(v);
         }
     }
@@ -65,6 +84,154 @@ pub fn mask_secrets(text: &str) -> String {
     }
 }
 
+pub fn redact_for_log(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+
+    let mut matches: Vec<(usize, usize)> = Vec::new();
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+
+    // 1. Authorization:\s*Bearer\s+[^\s]+
+    for (i, _) in s.char_indices() {
+        let remaining = &s[i..];
+        let lower = remaining.to_ascii_lowercase();
+        if lower.starts_with("authorization:") {
+            let start = i;
+            let mut j = i + 14;
+            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < len && s.is_char_boundary(j) && s[j..].to_ascii_lowercase().starts_with("bearer")
+            {
+                j += 6;
+                if j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                        j += 1;
+                    }
+                    let val_start = j;
+                    while j < len && !bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j > val_start {
+                        matches.push((start, j));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Bearer [A-Za-z0-9_\-\.=]{8,}
+    for (i, _) in s.char_indices() {
+        if s[i..].starts_with("Bearer ") {
+            let start = i;
+            let mut j = i + 7;
+            while j < len
+                && (bytes[j].is_ascii_alphanumeric()
+                    || bytes[j] == b'_'
+                    || bytes[j] == b'-'
+                    || bytes[j] == b'.'
+                    || bytes[j] == b'=')
+            {
+                j += 1;
+            }
+            if j - (i + 7) >= 8 {
+                matches.push((start, j));
+            }
+        }
+    }
+
+    // 3. (?i)(api[_-]?key|secret|token|password|signing[_-]?key)["'\s:=]+[A-Za-z0-9_\-\.=]{12,}
+    const KEYWORDS: &[&str] = &[
+        "api_key",
+        "api-key",
+        "apikey",
+        "signing_key",
+        "signing-key",
+        "signingkey",
+        "password",
+        "secret",
+        "token",
+    ];
+
+    for (i, _) in s.char_indices() {
+        let remaining = &s[i..];
+        let lower = remaining.to_ascii_lowercase();
+        let mut kw_len = 0;
+        for kw in KEYWORDS {
+            if lower.starts_with(kw) {
+                kw_len = kw.len();
+                break;
+            }
+        }
+
+        if kw_len > 0 {
+            let start = i;
+            let mut j = i + kw_len;
+            let sep_start = j;
+            while j < len
+                && (bytes[j] == b'"'
+                    || bytes[j] == b'\''
+                    || bytes[j] == b' '
+                    || bytes[j] == b'\t'
+                    || bytes[j] == b'\r'
+                    || bytes[j] == b'\n'
+                    || bytes[j] == b':'
+                    || bytes[j] == b'=')
+            {
+                j += 1;
+            }
+
+            if j > sep_start {
+                let val_start = j;
+                while j < len
+                    && (bytes[j].is_ascii_alphanumeric()
+                        || bytes[j] == b'_'
+                        || bytes[j] == b'-'
+                        || bytes[j] == b'.'
+                        || bytes[j] == b'=')
+                {
+                    j += 1;
+                }
+                if j - val_start >= 12 {
+                    matches.push((start, j));
+                }
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        return s.to_string();
+    }
+
+    matches.sort_by_key(|m| (m.0, m.1));
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in matches {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                if end > last.1 {
+                    last.1 = end;
+                }
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    let mut result = String::with_capacity(s.len());
+    let mut last_idx = 0;
+    for (start, end) in merged {
+        result.push_str(&s[last_idx..start]);
+        result.push_str("[REDACTED]");
+        last_idx = end;
+    }
+    if last_idx < s.len() {
+        result.push_str(&s[last_idx..]);
+    }
+    result
+}
+
 pub struct Server {
     name: String,
     version: String,
@@ -73,15 +240,31 @@ pub struct Server {
     prompts: HashMap<String, Arc<dyn Prompt>>,
     cache: Option<Arc<ToolCache>>,
     guardrail: Option<Arc<GuardrailPolicy>>,
-    cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    cancellations: Arc<RwLock<HashMap<Value, CancellationToken>>>,
     recorder: Option<SessionRecorder>,
     smac: Option<Arc<SmacLogger>>,
     vault_lock: Option<Arc<TimeLockedVault>>,
     receipt_book: Option<Arc<ReceiptBook>>,
+    secret_env_names: Vec<String>,
+    taint_tracker: Option<Arc<TaintTracker>>,
+    policy_engine: Option<Arc<PolicyEngine>>,
+    session_id: String,
 }
 
 impl Server {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        // Generate unique session ID for receipt tracking
+        let session_id = {
+            use std::fmt::Write;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let pid = std::process::id();
+            let mut s = String::with_capacity(24);
+            let _ = write!(s, "{:x}-{:x}", now.as_millis() as u64, pid);
+            s
+        };
+
         Self {
             name: name.into(),
             version: version.into(),
@@ -95,6 +278,61 @@ impl Server {
             smac: None,
             vault_lock: None,
             receipt_book: None,
+            secret_env_names: DEFAULT_SECRET_ENV_NAMES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            taint_tracker: None,
+            policy_engine: None,
+            session_id,
+        }
+    }
+
+    pub fn with_policy_engine(mut self, engine: PolicyEngine) -> Self {
+        self.policy_engine = Some(Arc::new(engine));
+        self
+    }
+
+    pub fn policy_engine(&self) -> Option<Arc<PolicyEngine>> {
+        self.policy_engine.clone()
+    }
+
+    pub fn with_taint_tracker(mut self, tracker: TaintTracker) -> Self {
+        self.taint_tracker = Some(Arc::new(tracker));
+        self
+    }
+
+    pub fn taint_tracker(&self) -> Option<Arc<TaintTracker>> {
+        self.taint_tracker.clone()
+    }
+
+    pub fn with_secret_env_names(mut self, names: Vec<String>) -> Self {
+        self.secret_env_names = names;
+        self
+    }
+
+    pub fn add_secret_env_name(&mut self, name: impl Into<String>) {
+        self.secret_env_names.push(name.into());
+    }
+
+    pub fn redact_tool_result(&self, result: &mut CallToolResult) {
+        if self.secret_env_names.is_empty() {
+            return;
+        }
+        for item in &mut result.content {
+            match item {
+                ContentItem::Text { text } => {
+                    *text = mask_secrets_with_names(text, &self.secret_env_names);
+                }
+                ContentItem::Image { data, mime_type } => {
+                    *data = mask_secrets_with_names(data, &self.secret_env_names);
+                    *mime_type = mask_secrets_with_names(mime_type, &self.secret_env_names);
+                }
+                ContentItem::Resource { resource } => {
+                    resource.text = mask_secrets_with_names(&resource.text, &self.secret_env_names);
+                    resource.uri = mask_secrets_with_names(&resource.uri, &self.secret_env_names);
+                }
+            }
         }
     }
 
@@ -208,8 +446,7 @@ impl Server {
                     "notifications/cancelled" => {
                         if let Some(params) = req.params {
                             if let Some(target_id) = params.get("requestId") {
-                                let id_str = target_id.to_string();
-                                if let Some(token) = self.cancellations.read().get(&id_str) {
+                                if let Some(token) = self.cancellations.read().get(target_id) {
                                     token.cancel();
                                 }
                             }
@@ -221,7 +458,10 @@ impl Server {
                         }
                     }
                     _ => {
-                        debug!("Received notification: method={}", req.method);
+                        debug!(
+                            "Received notification: method={}",
+                            redact_for_log(&req.method)
+                        );
                     }
                 }
                 return None;
@@ -333,10 +573,75 @@ impl Server {
 
                 match tool_name {
                     Some(name) => {
+                        if let Some(engine) = &self.policy_engine {
+                            if let Err(e) = engine.check_rate_limit(name) {
+                                let call_err = CallToolResult::error(e.to_string());
+                                return Some(JsonRpcResponse::success(req_id, json!(call_err)));
+                            }
+                            if name == "system_run_command" {
+                                let cmd = arguments
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let binary = cmd.split_whitespace().next().unwrap_or("");
+                                match engine.check_shell(binary, cmd) {
+                                    Ok(ShellPolicyDecision::Allow) => {}
+                                    Ok(ShellPolicyDecision::RequireSupervisorApproval(pattern)) => {
+                                        let call_err = CallToolResult::error(format!(
+                                            "Policy requires supervisor approval for pattern: {}",
+                                            pattern
+                                        ));
+                                        return Some(JsonRpcResponse::success(
+                                            req_id,
+                                            json!(call_err),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        let call_err = CallToolResult::error(e.to_string());
+                                        return Some(JsonRpcResponse::success(
+                                            req_id,
+                                            json!(call_err),
+                                        ));
+                                    }
+                                }
+                            }
+                            if name == "fs_read_file"
+                                || name == "fs_write_file"
+                                || name == "fs_list_directory"
+                            {
+                                if let Some(path_str) =
+                                    arguments.get("path").and_then(|v| v.as_str())
+                                {
+                                    let is_write = name == "fs_write_file";
+                                    if let Err(e) = engine
+                                        .check_filesystem(std::path::Path::new(path_str), is_write)
+                                    {
+                                        let call_err = CallToolResult::error(e.to_string());
+                                        return Some(JsonRpcResponse::success(
+                                            req_id,
+                                            json!(call_err),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(guardrail) = &self.guardrail {
                             if let Err(e) = guardrail.check_call(name, &arguments) {
                                 let call_err = CallToolResult::error(e.to_string());
                                 return Some(JsonRpcResponse::success(req_id, json!(call_err)));
+                            }
+                        }
+
+                        if let Some(tracker) = &self.taint_tracker {
+                            if name == "system_run_command" || name == "fs_write_file" {
+                                if let Err(e) = tracker.scan_json_arguments(
+                                    &arguments,
+                                    SinkCapability::PrivilegedExecution,
+                                ) {
+                                    let call_err = CallToolResult::error(e.to_string());
+                                    return Some(JsonRpcResponse::success(req_id, json!(call_err)));
+                                }
                             }
                         }
 
@@ -362,7 +667,7 @@ impl Server {
                                 if tool.is_cacheable() {
                                     if let Some(cache) = &self.cache {
                                         if let Some(cached_val) = cache.get(name, &arguments) {
-                                            debug!("Cache HIT for tool: {}", name);
+                                            debug!("Cache HIT for tool: {}", redact_for_log(name));
                                             return Some(JsonRpcResponse::success(
                                                 req_id, cached_val,
                                             ));
@@ -371,7 +676,7 @@ impl Server {
                                 }
 
                                 let cancel_token = CancellationToken::new();
-                                let cancel_key = req_id.to_string();
+                                let cancel_key = req_id.clone();
                                 self.cancellations
                                     .write()
                                     .insert(cancel_key.clone(), cancel_token.clone());
@@ -379,14 +684,18 @@ impl Server {
                                 let tool_clone = Arc::clone(tool);
                                 let args_clone = arguments.clone();
                                 let start_instant = std::time::Instant::now();
+                                let task_cancel = cancel_token.clone();
 
-                                let task =
-                                    tokio::spawn(
-                                        async move { tool_clone.execute(args_clone).await },
-                                    );
+                                let mut task = tokio::spawn(async move {
+                                    tokio::select! {
+                                        _ = task_cancel.cancelled() => Err(FastMcpError::ToolExecution("Cancelled".into())),
+                                        res = tool_clone.execute(args_clone) => res,
+                                    }
+                                });
 
                                 let execution_result = tokio::select! {
                                     _ = cancel_token.cancelled() => {
+                                        task.abort();
                                         self.cancellations.write().remove(&cancel_key);
                                         return Some(JsonRpcResponse::error(
                                             req_id,
@@ -395,7 +704,7 @@ impl Server {
                                             None,
                                         ));
                                     }
-                                    res = task => {
+                                    res = &mut task => {
                                         self.cancellations.write().remove(&cancel_key);
                                         match res {
                                             Ok(call_res) => call_res,
@@ -422,31 +731,45 @@ impl Server {
 
                                 match execution_result {
                                     Ok(mut tool_result) => {
-                                        for item in &mut tool_result.content {
-                                            match item {
-                                                ContentItem::Text { text } => {
-                                                    *text = mask_secrets(text);
-                                                    if let Some(guardrail) = &self.guardrail {
-                                                        if let Err(e) =
-                                                            guardrail.record_output(text)
-                                                        {
-                                                            let call_err = CallToolResult::error(
-                                                                e.to_string(),
-                                                            );
-                                                            return Some(JsonRpcResponse::success(
-                                                                req_id,
-                                                                json!(call_err),
-                                                            ));
-                                                        }
+                                        if let Some(engine) = &self.policy_engine {
+                                            let mut total_output_bytes = 0;
+                                            for item in &tool_result.content {
+                                                match item {
+                                                    ContentItem::Text { text } => {
+                                                        total_output_bytes += text.len()
+                                                    }
+                                                    ContentItem::Image { data, .. } => {
+                                                        total_output_bytes += data.len()
+                                                    }
+                                                    ContentItem::Resource { resource } => {
+                                                        total_output_bytes += resource.text.len()
                                                     }
                                                 }
-                                                ContentItem::Image { data, mime_type } => {
-                                                    *data = mask_secrets(data);
-                                                    *mime_type = mask_secrets(mime_type);
-                                                }
-                                                ContentItem::Resource { resource } => {
-                                                    resource.text = mask_secrets(&resource.text);
-                                                    resource.uri = mask_secrets(&resource.uri);
+                                            }
+                                            if let Err(e) =
+                                                engine.check_output_size(total_output_bytes)
+                                            {
+                                                let call_err = CallToolResult::error(e.to_string());
+                                                return Some(JsonRpcResponse::success(
+                                                    req_id,
+                                                    json!(call_err),
+                                                ));
+                                            }
+                                        }
+
+                                        self.redact_tool_result(&mut tool_result);
+
+                                        if let Some(guardrail) = &self.guardrail {
+                                            for item in &tool_result.content {
+                                                if let ContentItem::Text { text } = item {
+                                                    if let Err(e) = guardrail.record_output(text) {
+                                                        let call_err =
+                                                            CallToolResult::error(e.to_string());
+                                                        return Some(JsonRpcResponse::success(
+                                                            req_id,
+                                                            json!(call_err),
+                                                        ));
+                                                    }
                                                 }
                                             }
                                         }
@@ -485,7 +808,7 @@ impl Server {
                                             )
                                             .unwrap_or_default();
                                             let _ = receipt_book.record_execution(
-                                                "session-1",
+                                                &self.session_id,
                                                 name,
                                                 &schema_hash,
                                                 &arguments,
@@ -660,6 +983,15 @@ impl Server {
                         );
                         return serde_json::to_string(&err).ok();
                     }
+                    if items.len() > 100 {
+                        let err = JsonRpcResponse::error(
+                            Value::Null,
+                            -32600,
+                            "Invalid Request: batch too large".into(),
+                            None,
+                        );
+                        return serde_json::to_string(&err).ok();
+                    }
 
                     let mut responses = Vec::new();
                     for item in items {
@@ -757,7 +1089,10 @@ impl Server {
     }
 
     pub async fn run_stdio(&self) -> Result<(), FastMcpError> {
-        info!("InterMCP server '{}' running on stdio", self.name);
+        info!(
+            "InterMCP server '{}' running on stdio",
+            redact_for_log(&self.name)
+        );
 
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();

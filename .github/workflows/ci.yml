@@ -39,6 +39,11 @@ jobs:
       - name: Build Release Binary
         run: cargo build --release --verbose
 
+      - name: Security Audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
   node:
     name: NPM SDK & Integration
     runs-on: ubuntu-latest
@@ -71,4 +76,23 @@ jobs:
         run: |
           cd python
           python -m build --dry-run || python -m build --sdist
+
+  publish-check:
+    name: Cargo Publish Check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish Dry-Run Check
+        run: |
+          cargo install cargo --locked
+          cargo publish --dry-run --locked --allow-dirty
+
 

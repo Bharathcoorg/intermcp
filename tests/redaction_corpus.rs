@@ -121,3 +121,120 @@ async fn test_mask_all_content_item_variants() {
         .unwrap();
     assert!(!img_resp.contains("topsecretpass"));
 }
+
+#[test]
+fn test_redact_for_log_corpus() {
+    use intermcp::server::redact_for_log;
+
+    // 1. Bearer token
+    let bearer_input = "Received authorization token Bearer secret_bearer_token_123456 in request";
+    let bearer_redacted = redact_for_log(bearer_input);
+    assert!(
+        !bearer_redacted.contains("secret_bearer_token_123456"),
+        "Bearer token must be redacted, got: {}",
+        bearer_redacted
+    );
+    assert!(bearer_redacted.contains("[REDACTED]"));
+
+    // 2. JSON key + value
+    let json_input = r#"{"api_key": "prod_live_secret_key_9876543210", "status": "ok"}"#;
+    let json_redacted = redact_for_log(json_input);
+    assert!(
+        !json_redacted.contains("prod_live_secret_key_9876543210"),
+        "JSON secret must be redacted, got: {}",
+        json_redacted
+    );
+    assert!(json_redacted.contains("[REDACTED]"));
+
+    // 3. Header line
+    let header_input =
+        "Authorization: Bearer super-secret-header-auth-token-12345\r\nHost: example.com";
+    let header_redacted = redact_for_log(header_input);
+    assert!(
+        !header_redacted.contains("super-secret-header-auth-token-12345"),
+        "Header token must be redacted, got: {}",
+        header_redacted
+    );
+    assert!(header_redacted.contains("[REDACTED]"));
+
+    // 4. Benign short string (does NOT redact)
+    let benign_short = "Benign token: abc and Bearer 123";
+    let benign_result = redact_for_log(benign_short);
+    assert_eq!(
+        benign_result, benign_short,
+        "Benign short string must not be redacted"
+    );
+}
+
+#[test]
+fn test_tracing_subscriber_redaction_capture() {
+    use intermcp::server::redact_for_log;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
+    impl Write for CapturingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingWriter {
+        type Writer = CapturingWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let writer = CapturingWriter(Arc::clone(&buffer));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false)
+        .finish();
+
+    let bearer_secret = "Bearer secret_bearer_token_99887766";
+    let api_key_secret = "api_key=sk_live_1234567890abcdef";
+
+    tracing::subscriber::with_default(subscriber, || {
+        // Trigger callsites representative of hub, server, and http_server
+        tracing::info!(
+            "Spawning upstream server '{}'...",
+            redact_for_log(bearer_secret)
+        );
+        tracing::warn!(
+            "Upstream '{}' stdout stream closed",
+            redact_for_log(bearer_secret)
+        );
+        tracing::error!(
+            "Failed to spawn upstream '{}': {}",
+            redact_for_log("upstream-svc"),
+            redact_for_log(api_key_secret)
+        );
+        tracing::warn!(
+            "TLS handshake failed from 127.0.0.1:41240: {}",
+            redact_for_log(bearer_secret)
+        );
+    });
+
+    let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+    assert!(
+        !output.contains("secret_bearer_token_99887766"),
+        "Bearer secret must not appear in tracing logs, got: {}",
+        output
+    );
+    assert!(
+        !output.contains("sk_live_1234567890abcdef"),
+        "API key secret must not appear in tracing logs, got: {}",
+        output
+    );
+    assert!(
+        output.contains("[REDACTED]"),
+        "Redaction placeholder must appear in tracing logs, got: {}",
+        output
+    );
+}

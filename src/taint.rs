@@ -51,7 +51,16 @@ pub enum TaintViolation {
     ConfidentialEgressBlocked(String),
 }
 
-/// Tracks taint metadata across active sessions and tool invocations
+/// Tracks taint metadata across active sessions and tool invocations.
+///
+/// # Security Model (AUDIT-13 Advisory)
+///
+/// This tracker implements a **cooperative taint protocol**. It relies on callers
+/// voluntarily including a `_taint: "untrusted"` metadata field in JSON arguments.
+/// It does **NOT** defend against adversarial upstreams that control argument payloads
+/// and can simply omit the `_taint` field. For production adversarial defense,
+/// implement flow-based analysis that automatically tags data originating from
+/// proxied upstream tools, independent of caller cooperation.
 pub struct TaintTracker {
     /// Maps session/context item IDs to their assigned sensitivity labels
     item_labels: Arc<RwLock<HashMap<String, SensitivityLabel>>>,

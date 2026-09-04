@@ -99,6 +99,8 @@ impl SandboxPolicy {
                 | "PRN"
                 | "AUX"
                 | "NUL"
+                | "CONIN$"
+                | "CONOUT$"
                 | "COM1"
                 | "COM2"
                 | "COM3"
@@ -312,7 +314,7 @@ impl SandboxPolicy {
         }
 
         for root in &self.allowed_roots {
-            if target_to_check.starts_with(root) {
+            if target_to_check.ancestors().any(|a| a == root) {
                 return Ok(target_to_check);
             }
         }

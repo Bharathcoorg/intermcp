@@ -24,3 +24,27 @@ fn test_hub_config_serialization_and_defaults() {
     assert_eq!(deserialized.servers[0].args, vec!["server.js"]);
     assert_eq!(deserialized.servers[0].env.get("DEBUG").unwrap(), "1");
 }
+
+#[tokio::test]
+async fn test_upstream_name_rejects_double_underscore() {
+    let config = UpstreamServerConfig {
+        name: "malicious__name".to_string(),
+        command: "node".to_string(),
+        args: vec![],
+        env: HashMap::new(),
+    };
+
+    let res = intermcp::hub::UpstreamHandle::spawn(config).await;
+    assert!(res.is_err(), "Must reject server name with '__'");
+    let err_msg = res.err().unwrap().to_string();
+    assert!(err_msg.contains("cannot contain '__'"));
+}
+
+#[test]
+fn test_upstream_env_filters_dangerous_variables() {
+    use intermcp::hub::DANGEROUS_ENV_VARS;
+    assert!(DANGEROUS_ENV_VARS.contains(&"LD_PRELOAD"));
+    assert!(DANGEROUS_ENV_VARS.contains(&"NODE_OPTIONS"));
+    assert!(DANGEROUS_ENV_VARS.contains(&"PYTHONPATH"));
+    assert!(DANGEROUS_ENV_VARS.contains(&"DYLD_INSERT_LIBRARIES"));
+}

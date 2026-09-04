@@ -1,12 +1,13 @@
 [package]
 name = "intermcp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Bharath B R <bharathcoorg7@gmail.com>"]
 description = "Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer and open for all"
 license = "MIT"
 repository = "https://github.com/Bharathcoorg/intermcp"
-keywords = ["mcp", "model-context-protocol", "ai", "claude", "interlayer"]
+rust-version = "1.75"
+keywords = ["mcp", "mcp-protocol", "ai", "claude", "interlayer"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
@@ -26,6 +27,14 @@ tempfile = "3.10"
 toml = "0.8"
 parking_lot = "0.12"
 sha2 = "0.10"
+rand = "0.8"
+serde_jcs = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

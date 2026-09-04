@@ -106,11 +106,11 @@ pub fn create_fs_write_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                     Err(e) => return Ok(CallToolResult::error(e.to_string())),
                 };
 
-                if safe_path.exists() {
-                    if let Ok(sym_meta) = safe_path.symlink_metadata() {
-                        if sym_meta.file_type().is_symlink() {
-                            return Ok(CallToolResult::error("Security error: Cannot overwrite symlink target".to_string()));
-                        }
+                if let Ok(sym_meta) = safe_path.symlink_metadata() {
+                    if sym_meta.file_type().is_symlink() {
+                        return Ok(CallToolResult::error(
+                            "Security error: Cannot overwrite symlink target".to_string(),
+                        ));
                     }
                 }
 

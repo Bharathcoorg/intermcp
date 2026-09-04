@@ -10,12 +10,12 @@
 ```
 
 ### Ultra-Fast, Safe Model Context Protocol (MCP) Engine & Multiplexing Hub in Pure Rust
-**2.19 µs latency • 457,000+ ops/sec • < 3.8 MB RAM • SafeFS Sandboxing • 1-Click Multi-IDE Setup**
+**Sub-millisecond dispatch • 457,000+ ops/sec* • < 3.8 MB RAM • SafeFS Sandboxing • 1-Click Multi-IDE Setup**
 
 *Originally engineered for low-latency AI tool execution on the **Interlayer** blockchain; 100% open-source for the global developer ecosystem.*
 
-[![Crates.io](https://img.shields.io/badge/crates.io-v0.1.0-orange.svg?style=for-the-badge&logo=rust)](https://crates.io/crates/intermcp)
-[![npm](https://img.shields.io/badge/npm-v0.1.0-CB3837.svg?style=for-the-badge&logo=npm)](https://www.npmjs.com/package/intermcp)
+[![Crates.io](https://img.shields.io/badge/crates.io-v0.2.0-orange.svg?style=for-the-badge&logo=rust)](https://crates.io/crates/intermcp)
+[![npm](https://img.shields.io/badge/npm-v0.2.0-CB3837.svg?style=for-the-badge&logo=npm)](https://www.npmjs.com/package/intermcp)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg?style=for-the-badge&logo=githubactions)](https://github.com/Bharathcoorg/intermcp)
 [![Memory](https://img.shields.io/badge/RAM-<3.8MB-purple.svg?style=for-the-badge)](https://github.com/Bharathcoorg/intermcp)
@@ -32,7 +32,7 @@
 The **Model Context Protocol (MCP)** standardizes how language models (Claude Desktop, Cursor, Windsurf, Zed) interface with external developer tools, file systems, and databases.
 
 **`InterMCP`** is a minimal-dependency, pure Rust implementation of the MCP specification (2024-11-05), engineered for high-throughput, low-latency, and memory-constrained environments:
-- **Sub-Microsecond Latency**: 2.19 µs per request dispatch.
+- **Low-Latency Routing**: sub-millisecond in-process dispatch (see bench).
 - **Minimal Footprint**: Operates in under 3.8 MB of resident memory (RSS).
 - **SafeFS Sandboxing**: Canonical path containment preventing unauthorized directory traversal and symlink escapes.
 - **Universal Multiplexing Hub**: Spawns, health-checks, and aggregates multiple external MCP servers into a single stdio pipe.
@@ -107,8 +107,8 @@ Micro-benchmarks conducted on an AMD Ryzen 9 / Apple Silicon system processing 5
 | :--- | :---: | :---: | :---: |
 | **Cold Boot Latency** | 420 ms | 680 ms | **0.4 ms** |
 | **Memory Footprint (RSS)** | 162 MB | 114 MB | **< 3.8 MB** |
-| **Average Dispatch Latency** | 45.0 ms | 62.0 ms | **2.19 µs (0.0021 ms)** |
-| **Throughput (Single Core)** | 1,420 ops/s | 890 ops/s | **457,042 ops/s** |
+| **Average Dispatch Latency** | 45.0 ms | 62.0 ms | **sub-millisecond (< 5 µs in-process)** |
+| **Throughput (Single Core)** | 1,420 ops/s | 890 ops/s | **457,042 ops/s\*** |
 | **Runtime Dependencies** | Node.js + npm dependencies | Python 3.10+ + virtualenv | **None (Static Binary)** |
 
 Reproduce locally with:
@@ -116,7 +116,8 @@ Reproduce locally with:
 intermcp bench --iterations 5000
 ```
 
-> ℹ️ **Benchmark Methodology**: Reference SDK metrics reflect standard runtime startup and cross-process invocation overhead. InterMCP metrics measure direct in-process JSON-RPC routing and handler dispatch.
+> ℹ️ **Benchmark Methodology**: Reference SDK metrics reflect standard runtime startup and cross-process invocation overhead. InterMCP metrics measure direct in-process JSON-RPC routing and handler dispatch.  
+> \* *Measured for in-process ping only; tool execution latency dominates in practice.*
 
 ---
 
@@ -138,7 +139,7 @@ Run:
 ```bash
 intermcp hub --config mcp-hub.json
 ```
-InterMCP proxies requests, namespaces upstream tools (`github__create_issue`), monitors process health, and exposes a single unified stdio pipe.
+InterMCP proxies requests, namespaces upstream tools (`github__create_issue`), monitors process health (using Windows Job Objects with kill-on-close semantics on Windows, and POSIX process groups on Unix), and exposes a single unified stdio pipe.
 
 ### 2. SafeFS Path Sandboxing & Secret Shield (`--sandbox`)
 Prevents language models from navigating outside authorized project directories and automatically blocks attempts to access sensitive credential files (`.env`, `id_rsa`, `.pem`, `credentials.json`, `.npmrc`):
@@ -223,8 +224,8 @@ max_calls_per_minute = 60
 ### 14. Dynamic Data-Flow Taint Tracking (`src/taint.rs`)
 Enforces MCP-native confidentiality and provenance labels (`Public`, `Internal`, `Confidential`, `Untrusted`). Prevents untrusted web search data or community upstream inputs from flowing directly into privileged sinks (`system_run_command`, writing executable scripts) without human supervisor approval.
 
-### 15. Sandboxed WebAssembly Tool Runner (`src/wasm.rs`)
-Execute third-party community tools with total host isolation. Validates standard WASM v1 binaries, enforces strict linear memory limits, and prevents any unauthorized host filesystem or network access.
+### 15. WebAssembly Module Inspector (`src/wasm.rs`)
+WASM module inspector (validates header, version, declared memory, exports — does NOT execute bytecode in an isolated VM).
 
 ---
 
@@ -251,7 +252,7 @@ Implements the **2024-11-05 Model Context Protocol specification**:
 Add `intermcp` to your `Cargo.toml`:
 ```toml
 [dependencies]
-intermcp = "0.1"
+intermcp = "0.2"
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -263,7 +264,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut server = Server::new("custom-server", "0.1.0");
+    let mut server = Server::new("custom-server", "0.2.0");
 
     server.add_tool(Box::new(SimpleTool::new(
         "calculate_hash",
@@ -390,6 +391,23 @@ echo json_encode($result, JSON_PRETTY_PRINT);
 $client->close();
 ```
 *See [`examples/php_client.php`](examples/php_client.php) and [`php/`](php/) for the complete Composer package.*
+
+---
+
+## 🌐 Remote HTTP/SSE Transport with TLS (`--http`)
+
+InterMCP supports remote serving over HTTP and Server-Sent Events (SSE) with mandatory token authentication and native TLS termination:
+
+```bash
+# Local development (loopback)
+intermcp --http 127.0.0.1:8080 --token my-secret-token
+
+# Production with TLS termination (rustls)
+intermcp --http 0.0.0.0:8443 --token my-secret-token \
+  --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
+```
+
+Public binds (`0.0.0.0` or `::`) enforce default-deny: they require `--token` and valid `--tls-cert` + `--tls-key` unless explicitly overridden with `--require-tls-on-public-bind false`.
 
 ---
 

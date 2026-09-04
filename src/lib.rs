@@ -51,12 +51,14 @@ pub use receipts::{
 pub use record::{FrameDirection, ReplaySummary, SessionFrame, SessionRecorder, SessionReplayer};
 pub use resource::{Resource, SimpleResource};
 pub use sandbox::SandboxPolicy;
-pub use server::{mask_secrets, Server};
+pub use server::{mask_secrets, redact_for_log, Server};
 pub use smac::{verify_smac_log, SmacEntry, SmacLogger};
 pub use taint::{SensitivityLabel, SinkCapability, TaintTracker, TaintViolation};
 pub use tool::{SimpleTool, Tool};
 pub use vault_lock::{PendingActionSummary, TimeLockedVault};
-pub use wasm::{WasmModuleMetadata, WasmModuleValidator, WasmSandboxConfig, WasmTool};
+pub use wasm::{
+    WasmInspector, WasmModuleMetadata, WasmModuleValidator, WasmSandboxConfig, WasmTool,
+};
 
 pub type Result<T> = std::result::Result<T, FastMcpError>;
 

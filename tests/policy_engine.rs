@@ -47,6 +47,13 @@ fn test_declarative_policy_from_toml() {
     assert!(engine
         .check_filesystem(Path::new("~/.ssh/id_rsa"), false)
         .is_err());
+    // SEC-06 regression: Normalization prevents dot-segment bypass of denied rules
+    assert!(engine
+        .check_filesystem(Path::new("./src/./.env.local"), false)
+        .is_err());
+    assert!(engine
+        .check_filesystem(Path::new("./src/nested/../.env.local"), false)
+        .is_err());
 
     // Test shell binary allowlist
     let git_decision = engine.check_shell("git", "git status").unwrap();

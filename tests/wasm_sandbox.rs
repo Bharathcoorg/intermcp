@@ -55,6 +55,22 @@ async fn test_wasm_tool_sandbox() {
     let result_obj = resp.result.unwrap();
     assert_eq!(result_obj["isError"], false);
     let content_text = result_obj["content"][0]["text"].as_str().unwrap();
-    assert!(content_text.contains("executed_in_wasm_sandbox"));
-    assert!(content_text.contains("zero_host_filesystem_and_network_access"));
+    assert!(content_text.contains("inspected_wasm_module_metadata"));
+    assert!(content_text.contains("static_validation_stub"));
+}
+
+#[test]
+fn test_wasm_leb128_overflow_protection() {
+    // Valid header followed by a section with an overflowing LEB128 length
+    let mut malformed_wasm = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+    // Section ID 1
+    malformed_wasm.push(0x01);
+    // Malformed LEB128 with > 5 continuation bytes (shift > 28)
+    malformed_wasm.extend_from_slice(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01]);
+
+    let config = WasmSandboxConfig::default();
+    let res = WasmModuleValidator::inspect(&malformed_wasm, &config);
+    assert!(res.is_err(), "Must reject LEB128 overflow");
+    let err_msg = res.err().unwrap().to_string();
+    assert!(err_msg.contains("LEB128 integer overflow"));
 }

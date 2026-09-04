@@ -98,37 +98,42 @@ func discoverBinary() string {
 // Start launches the native InterMCP process and completes the protocol handshake
 func (c *Client) Start() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.cmd = exec.Command(c.binaryPath, "serve")
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
 	stdout, err := c.cmd.StdoutPipe()
 	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
 	c.stdin = stdin
 	c.scanner = bufio.NewScanner(stdout)
+	const maxCapacity = 16 * 1024 * 1024 // 16 MB buffer limit
+	buf := make([]byte, 64*1024)
+	c.scanner.Buffer(buf, maxCapacity)
 
 	if err := c.cmd.Start(); err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to start intermcp binary '%s': %w", c.binaryPath, err)
 	}
+	c.mu.Unlock()
 
 	// MCP 2024-11-05 Handshake
 	initParams := map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"clientInfo": map[string]string{
 			"name":    "intermcp-go-sdk",
-			"version": "0.1.0",
+			"version": "0.2.0",
 		},
 		"capabilities": map[string]interface{}{},
 	}
 
-	_, err = c.sendRequestLocked("initialize", initParams)
+	_, err = c.Request("initialize", initParams)
 	if err != nil {
 		c.Close()
 		return fmt.Errorf("handshake failed: %w", err)

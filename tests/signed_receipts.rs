@@ -41,6 +41,48 @@ fn test_rfc_8785_jcs_canonicalization_ordering() {
 }
 
 #[test]
+fn test_rfc_8785_f64_shortest_round_trip() {
+    let f64_payload = json!({
+        "a_float": 0.1,
+        "tiny": 1e-100,
+        "huge": 1.0e308,
+        "zero": 0.0,
+    });
+
+    let canonical = canonicalize_json(&f64_payload).unwrap();
+    let canonical_str = String::from_utf8(canonical).unwrap();
+
+    // Verify shortest round-trip formatting per RFC 8785 section 3.2.2.3
+    assert!(canonical_str.contains("\"a_float\":0.1"));
+    assert!(canonical_str.contains("\"tiny\":1e-100"));
+    assert!(canonical_str.contains("\"huge\":1e+308"));
+    assert!(canonical_str.contains("\"zero\":0"));
+
+    // Deterministic hash
+    let hash1 = hash_canonical_json(&f64_payload).unwrap();
+    let hash2 = hash_canonical_json(&f64_payload).unwrap();
+    assert_eq!(hash1, hash2);
+}
+
+#[test]
+fn test_rfc_8785_integer_boundary_round_trip() {
+    let int_payload = json!({
+        "max_u64": u64::MAX,
+        "max_i64": i64::MAX,
+        "min_i64": i64::MIN,
+    });
+    let canonical = canonicalize_json(&int_payload).unwrap();
+    let canonical_str = String::from_utf8(canonical).unwrap();
+    assert!(canonical_str.contains(&format!("\"max_u64\":{}", u64::MAX)));
+    assert!(canonical_str.contains(&format!("\"max_i64\":{}", i64::MAX)));
+    assert!(canonical_str.contains(&format!("\"min_i64\":{}", i64::MIN)));
+
+    let hash1 = hash_canonical_json(&int_payload).unwrap();
+    let hash2 = hash_canonical_json(&int_payload).unwrap();
+    assert_eq!(hash1, hash2);
+}
+
+#[test]
 fn test_signed_receipt_chain_generation_and_verification() {
     let tmp = NamedTempFile::new().unwrap();
     let path = tmp.path();

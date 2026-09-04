@@ -87,9 +87,6 @@ fn test_legitimate_developer_commands_allowed() {
         "grep -r 'fn main' src/",
         "echo 'Hello World'",
         "pwd",
-        "cargo build",
-        "cargo test --lib",
-        "cargo clippy",
         "npm run build",
         "npm test",
         "node index.js",
@@ -112,10 +109,78 @@ fn test_legitimate_developer_commands_allowed() {
 
 #[test]
 fn test_custom_allowed_binaries() {
-    let custom_bin = vec!["docker".to_string(), "make".to_string()];
+    let custom_bin = vec![
+        "docker".to_string(),
+        "make".to_string(),
+        "cargo".to_string(),
+        "node -e".to_string(),
+        "python -c".to_string(),
+    ];
 
     assert!(validate_shell_command("docker ps", &custom_bin).is_ok());
     assert!(validate_shell_command("make test", &custom_bin).is_ok());
+    assert!(validate_shell_command("cargo build", &custom_bin).is_ok());
+    assert!(validate_shell_command("cargo test --lib", &custom_bin).is_ok());
+    assert!(validate_shell_command("node -e 'console.log(1)'", &custom_bin).is_ok());
+    assert!(validate_shell_command("python -c 'print(1)'", &custom_bin).is_ok());
 
+    // Without explicit opt-in, cargo and code execution flags are rejected
     assert!(validate_shell_command("docker ps", &[]).is_err());
+    assert!(validate_shell_command("cargo build", &[]).is_err());
+    assert!(validate_shell_command("node -e 'console.log(1)'", &[]).is_err());
+    assert!(validate_shell_command("ruby -e 'exit 0'", &[]).is_err());
+    assert!(validate_shell_command("echo `whoami`", &[]).is_err());
+}
+
+#[test]
+fn test_shell_linter_hardening_regression() {
+    // $(whoami) -> must be rejected as tokenizer violation
+    let res_subshell = validate_shell_command("echo $(whoami)", &[]);
+    assert!(res_subshell.is_err());
+    assert!(res_subshell.unwrap_err().contains("Command substitution"));
+
+    // `whoami` -> must be rejected
+    let res_backtick = validate_shell_command("echo `whoami`", &[]);
+    assert!(res_backtick.is_err());
+    assert!(res_backtick.unwrap_err().contains("backticks"));
+
+    // ${HOME} -> must be rejected
+    let res_var = validate_shell_command("echo ${HOME}", &[]);
+    assert!(res_var.is_err());
+    assert!(res_var.unwrap_err().contains("Variable expansion"));
+
+    // /usr/bin/env python3 -> must be rejected as banned binary
+    let res_env = validate_shell_command("/usr/bin/env python3", &[]);
+    assert!(res_env.is_err());
+    assert!(res_env
+        .unwrap_err()
+        .contains("Use of /usr/bin/env is prohibited"));
+
+    // git config core.editor "vi -c ':!rm -rf /'" -> must still be rejected (existing allowed-binary + quoted-arg test)
+    let res_git_quoted =
+        validate_shell_command("git config core.editor \"vi -c ':!rm -rf /'\"", &[]);
+    assert!(res_git_quoted.is_err());
+    assert!(res_git_quoted.unwrap_err().contains("rm -rf"));
+}
+
+#[test]
+fn test_split_chained_commands_trailing_operators() {
+    // SEC-01 regression: Trailing single/double chaining operators must not trigger index out of bounds panic
+    let trailing_payloads = [
+        "echo foo &",
+        "git status |",
+        "echo bar &&",
+        "git branch ||",
+        "git status ;",
+        "&",
+        "|",
+        "&&",
+        "||",
+        ";",
+    ];
+
+    for payload in &trailing_payloads {
+        // Must not panic, regardless of validation result
+        let _ = validate_shell_command(payload, &[]);
+    }
 }

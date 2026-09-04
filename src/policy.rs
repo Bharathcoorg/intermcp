@@ -1,7 +1,7 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -99,8 +99,7 @@ pub enum ShellPolicyDecision {
 
 /// Sliding window rate limiter state
 struct RateLimiter {
-    window_start: Instant,
-    count: u32,
+    timestamps: VecDeque<Instant>,
 }
 
 /// High-Performance Atomic Policy Engine & Runtime Gate
@@ -141,12 +140,34 @@ impl PolicyEngine {
 
     /// Evaluate filesystem read/write operation against path rules
     pub fn check_filesystem(&self, path: &Path, is_write: bool) -> Result<(), PolicyViolation> {
-        let path_str = path.to_string_lossy().to_lowercase();
+        let raw_str = path.to_string_lossy().to_lowercase().replace('\\', "/");
+        let canonical_or_normalized = dunce::canonicalize(path).unwrap_or_else(|_| {
+            let mut normalized = std::path::PathBuf::new();
+            for comp in path.components() {
+                match comp {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        normalized.pop();
+                    }
+                    _ => normalized.push(comp.as_os_str()),
+                }
+            }
+            normalized
+        });
+        let norm_str = canonical_or_normalized
+            .to_string_lossy()
+            .to_lowercase()
+            .replace('\\', "/");
 
         // 1. Check denied patterns
         for pattern in &self.policy.filesystem.denied {
-            let p_lower = pattern.to_lowercase();
-            if path_str.contains(&p_lower) || path_str.ends_with(&p_lower) {
+            let p_norm = pattern.to_lowercase().replace('\\', "/");
+            let p_trimmed = p_norm.trim_end_matches('/');
+            if raw_str.contains(&p_norm)
+                || raw_str.ends_with(p_trimmed)
+                || norm_str.contains(&p_norm)
+                || norm_str.ends_with(p_trimmed)
+            {
                 self.record_violation();
                 if self.policy.mode == PolicyMode::Enforcing {
                     return Err(PolicyViolation::FilesystemDenied(format!(
@@ -158,12 +179,30 @@ impl PolicyEngine {
             }
         }
 
+        let is_within_dir = |target: &Path, allowed_dir: &str| -> bool {
+            let allowed_path = Path::new(allowed_dir);
+            if target.ancestors().any(|a| a == allowed_path) {
+                return true;
+            }
+            if let (Ok(c_target), Ok(c_allowed)) = (
+                dunce::canonicalize(target),
+                dunce::canonicalize(allowed_path),
+            ) {
+                if c_target.ancestors().any(|a| a == c_allowed) {
+                    return true;
+                }
+            }
+            false
+        };
+
         // 2. Check write permissions if writing
         if is_write && !self.policy.filesystem.read_write.is_empty() {
-            let allowed = self.policy.filesystem.read_write.iter().any(|allowed_dir| {
-                let allowed_buf = PathBuf::from(allowed_dir);
-                path.starts_with(&allowed_buf) || path_str.starts_with(&allowed_dir.to_lowercase())
-            });
+            let allowed = self
+                .policy
+                .filesystem
+                .read_write
+                .iter()
+                .any(|allowed_dir| is_within_dir(path, allowed_dir));
 
             if !allowed {
                 self.record_violation();
@@ -178,13 +217,18 @@ impl PolicyEngine {
 
         // 3. Check read permissions if read-only is restricted
         if !is_write && !self.policy.filesystem.read_only.is_empty() {
-            let allowed = self.policy.filesystem.read_only.iter().any(|allowed_dir| {
-                let allowed_buf = PathBuf::from(allowed_dir);
-                path.starts_with(&allowed_buf) || path_str.starts_with(&allowed_dir.to_lowercase())
-            }) || self.policy.filesystem.read_write.iter().any(|allowed_dir| {
-                let allowed_buf = PathBuf::from(allowed_dir);
-                path.starts_with(&allowed_buf) || path_str.starts_with(&allowed_dir.to_lowercase())
-            });
+            let allowed = self
+                .policy
+                .filesystem
+                .read_only
+                .iter()
+                .any(|allowed_dir| is_within_dir(path, allowed_dir))
+                || self
+                    .policy
+                    .filesystem
+                    .read_write
+                    .iter()
+                    .any(|allowed_dir| is_within_dir(path, allowed_dir));
 
             if !allowed {
                 self.record_violation();
@@ -254,34 +298,36 @@ impl PolicyEngine {
             return Ok(());
         }
 
+        let now = Instant::now();
         let mut limiters = self.rate_limits.write();
         let limiter = limiters
             .entry(tool_name.to_string())
             .or_insert_with(|| RateLimiter {
-                window_start: Instant::now(),
-                count: 0,
+                timestamps: VecDeque::new(),
             });
 
-        if limiter.window_start.elapsed().as_secs() >= 60 {
-            limiter.window_start = Instant::now();
-            limiter.count = 1;
-            Ok(())
-        } else {
-            limiter.count += 1;
-            if limiter.count > max_calls {
-                self.record_violation();
-                if self.policy.mode == PolicyMode::Enforcing {
-                    Err(PolicyViolation::RateLimitExceeded(
-                        tool_name.to_string(),
-                        max_calls,
-                    ))
-                } else {
-                    Ok(())
-                }
+        // Evict timestamps outside the 60-second sliding window
+        while let Some(&front) = limiter.timestamps.front() {
+            if now.duration_since(front).as_secs() >= 60 {
+                limiter.timestamps.pop_front();
             } else {
-                Ok(())
+                break;
             }
         }
+
+        if limiter.timestamps.len() >= max_calls as usize {
+            self.record_violation();
+            if self.policy.mode == PolicyMode::Enforcing {
+                return Err(PolicyViolation::RateLimitExceeded(
+                    tool_name.to_string(),
+                    max_calls,
+                ));
+            }
+        } else {
+            limiter.timestamps.push_back(now);
+        }
+
+        Ok(())
     }
 
     /// Check if output exceeds maximum byte limit

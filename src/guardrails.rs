@@ -93,7 +93,7 @@ impl GuardrailPolicy {
         let count = self.prune_counter.fetch_add(1, Ordering::Relaxed);
         let mut hist = self.history.write();
 
-        if count.is_multiple_of(100) {
+        if count % 100 == 0 {
             hist.retain(|_, timestamps| {
                 timestamps.retain(|&t| t > one_minute_ago);
                 !timestamps.is_empty()
@@ -112,7 +112,8 @@ impl GuardrailPolicy {
 
         timestamps.push(now);
 
-        let signature = format!("{}:{}", tool_name, arguments);
+        let arg_hash = compute_normalized_arguments_hash(arguments);
+        let signature = format!("{}:{}", tool_name, arg_hash);
         let mut last = self.last_signature.write();
         let consecutive_count = match &*last {
             Some((prev_sig, c)) if prev_sig == &signature => c + 1,
@@ -139,5 +140,71 @@ impl GuardrailPolicy {
         self.history.write().clear();
         self.char_history.write().clear();
         *self.last_signature.write() = None;
+    }
+}
+
+fn normalize_value_for_loop_detection(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(s.trim().to_lowercase()),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(normalize_value_for_loop_detection).collect())
+        }
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            let mut normalized_map = serde_json::Map::new();
+            for (k, v) in entries {
+                normalized_map.insert(
+                    k.trim().to_lowercase(),
+                    normalize_value_for_loop_detection(v),
+                );
+            }
+            serde_json::Value::Object(normalized_map)
+        }
+        other => other.clone(),
+    }
+}
+
+pub fn compute_normalized_arguments_hash(value: &serde_json::Value) -> String {
+    let normalized = normalize_value_for_loop_detection(value);
+    match crate::receipts::hash_canonical_json(&normalized) {
+        Ok(h) => h,
+        Err(_) => {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(normalized.to_string().as_bytes());
+            format!("{:x}", hasher.finalize())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_normalized_arguments_hash_ignores_whitespace_and_case() {
+        let args1 = json!({
+            "command": "  GIT PUSH origin main  ",
+            "flags": ["  --FORCE  "]
+        });
+        let args2 = json!({
+            "command": "git push origin main",
+            "flags": ["--force"]
+        });
+
+        let hash1 = compute_normalized_arguments_hash(&args1);
+        let hash2 = compute_normalized_arguments_hash(&args2);
+        assert_eq!(
+            hash1, hash2,
+            "Normalized arguments hashes must match despite whitespace/case differences"
+        );
+
+        let policy = GuardrailPolicy::new(100, 2);
+        policy.check_call("cmd_run", &args1).unwrap();
+        policy.check_call("cmd_run", &args2).unwrap();
+        let loop_err = policy.check_call("cmd_run", &args1).unwrap_err();
+        assert!(loop_err.to_string().contains("Infinite loop detected"));
     }
 }

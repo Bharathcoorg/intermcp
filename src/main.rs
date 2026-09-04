@@ -53,9 +53,18 @@ enum Commands {
         /// Run as a remote HTTP/SSE server instead of stdio (e.g. '0.0.0.0:8080')
         #[arg(long)]
         http: Option<String>,
-        /// Secret Bearer token for HTTP/SSE authentication
+        /// Secret Bearer token for HTTP/SSE authentication (required when --http is specified)
         #[arg(long)]
         token: Option<String>,
+        /// Require TLS when binding HTTP server to public addresses (0.0.0.0 or ::). Default true.
+        #[arg(long, default_value_t = true)]
+        require_tls_on_public_bind: bool,
+        /// Path to TLS certificate PEM file for HTTPS/TLS termination
+        #[arg(long)]
+        tls_cert: Option<String>,
+        /// Path to TLS private key PEM file for HTTPS/TLS termination
+        #[arg(long)]
+        tls_key: Option<String>,
         /// Explicit Allowed CORS Origin for HTTP/SSE endpoint
         #[arg(long)]
         cors_origin: Option<String>,
@@ -176,6 +185,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: None,
         http: None,
         token: None,
+        require_tls_on_public_bind: true,
+        tls_cert: None,
+        tls_key: None,
         cors_origin: None,
         allow_bin: None,
         record: None,
@@ -195,6 +207,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             http,
             token,
+            require_tls_on_public_bind,
+            tls_cert,
+            tls_key,
             cors_origin,
             allow_bin,
             record,
@@ -314,14 +329,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server = server.with_time_locked_vault(intermcp::TimeLockedVault::new(tools, 20));
             }
 
+            if let Some(path_str) = policy_file {
+                if let Ok(content) = std::fs::read_to_string(path_str) {
+                    let engine_res = if path_str.ends_with(".json") {
+                        intermcp::policy::PolicyEngine::from_json(&content)
+                            .map_err(|e| e.to_string())
+                    } else {
+                        intermcp::policy::PolicyEngine::from_toml(&content)
+                            .map_err(|e| e.to_string())
+                    };
+                    if let Ok(engine) = engine_res {
+                        server = server.with_policy_engine(engine);
+                    }
+                }
+            }
+
             if let Some(r_path) = receipts {
-                let key_bytes = signing_key
-                    .as_deref()
-                    .unwrap_or("intermcp-default-secret-key")
-                    .as_bytes();
+                let key_string = match signing_key {
+                    Some(k) => k,
+                    None => {
+                        use rand::RngCore;
+                        use std::fmt::Write;
+                        let mut key_raw = [0u8; 32];
+                        rand::rngs::OsRng.fill_bytes(&mut key_raw);
+                        let mut hex_key = String::with_capacity(64);
+                        for b in key_raw {
+                            let _ = write!(hex_key, "{:02x}", b);
+                        }
+                        eprintln!(
+                            "Notice: No --signing-key provided for receipts; generated ephemeral key: {}",
+                            hex_key
+                        );
+                        hex_key
+                    }
+                };
                 server = server.with_receipt_book(intermcp::ReceiptBook::new(
                     std::path::Path::new(&r_path),
-                    key_bytes,
+                    key_string.as_bytes(),
                     "intermcp-node",
                 )?);
             }
@@ -332,6 +376,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Some(addr) = http {
+                if token.is_none() {
+                    eprintln!("Error: --http requires --token for authentication");
+                    std::process::exit(1);
+                }
+                if require_tls_on_public_bind
+                    && intermcp::http_server::bind_addr_is_public(&addr)
+                    && (tls_cert.is_none() || tls_key.is_none())
+                {
+                    eprintln!("Error: Insecure public bind '{}' rejected. HTTP server requires TLS on public binds (0.0.0.0 or ::).", addr);
+                    std::process::exit(1);
+                }
                 let server_arc = Arc::new(server);
                 run_http_server(
                     server_arc,
@@ -340,6 +395,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         auth_token: token,
                         cors_origin,
                         max_conns: loaded_policy.and_then(|p| p.http_max_conns),
+                        tls_cert: tls_cert.map(PathBuf::from),
+                        tls_key: tls_key.map(PathBuf::from),
                     },
                 )
                 .await?;
@@ -389,9 +446,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 log
             );
             let key_bytes = key.as_deref().map(|k| k.as_bytes());
+            if key_bytes.is_none() {
+                eprintln!(
+                    "⚠️  WARNING: No HMAC secret key provided (--key). Only SHA-256 hash chain continuity and JSON formatting were validated; cryptographic signatures were NOT verified."
+                );
+            }
             match intermcp::verify_receipt_chain_file(std::path::Path::new(&log), key_bytes) {
                 Ok(summary) => {
-                    println!("✅ ADR 001 Signed Receipts authenticated successfully!");
+                    if summary.signatures_verified {
+                        println!("✅ ADR 001 Signed Receipts authenticated successfully with HMAC signatures!");
+                    } else {
+                        println!("⚠️  ADR 001 Receipts hash chain continuity validated (signatures UNVERIFIED due to missing --key).");
+                    }
                     println!("   • Verified receipts: {}", summary.count);
                     println!("   • Hash chain tip: {}", summary.last_hash);
                 }
@@ -437,6 +503,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     auth_token: None,
                     cors_origin: None,
                     max_conns: None,
+                    tls_cert: None,
+                    tls_key: None,
                 },
             )
             .await?;

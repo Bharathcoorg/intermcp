@@ -1,5 +1,6 @@
 {
   "name": "intermcp/client",
+  "version": "0.2.0",
   "description": "Ultra-Fast, Safe Model Context Protocol (MCP) PHP Client for InterMCP Trust Runtime",
   "type": "library",
   "license": "MIT",

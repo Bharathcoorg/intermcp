@@ -1,3 +1,4 @@
+/** InterMCP Node.js / TypeScript SDK v0.2.0 */
 const { spawn } = require("child_process");
 const readline = require("readline");
 const path = require("path");
@@ -50,16 +51,30 @@ class InterMcpClient {
     // Handshake
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
-      clientInfo: { name: "intermcp-node-client", version: "0.1.0" },
+      clientInfo: { name: "intermcp-node-client", version: "0.2.0" },
     });
   }
 
   request(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = ++this.requestId;
-      this.pending.set(id, { resolve, reject });
+      // AUDIT-16: Add 30-second timeout to prevent memory leak and application hang
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`InterMCP request timeout after 30s: ${method}`));
+      }, 30000);
+      this.pending.set(id, {
+        resolve: (val) => { clearTimeout(timer); resolve(val); },
+        reject: (err) => { clearTimeout(timer); reject(err); },
+      });
       const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
-      this.proc.stdin.write(msg);
+      this.proc.stdin.write(msg, (err) => {
+        if (err) {
+          clearTimeout(timer);
+          this.pending.delete(id);
+          reject(new Error(`Failed to write to InterMCP stdin: ${err.message}`));
+        }
+      });
     });
   }
 

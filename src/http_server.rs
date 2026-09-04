@@ -1,13 +1,17 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing::info;
+
+use std::path::PathBuf;
 
 use crate::server::Server;
 
@@ -16,30 +20,145 @@ pub struct HttpServerConfig {
     pub auth_token: Option<String>,
     pub cors_origin: Option<String>,
     pub max_conns: Option<usize>,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+}
+
+pub fn bind_addr_is_public(addr: &str) -> bool {
+    if let Ok(sa) = addr.parse::<std::net::SocketAddr>() {
+        return !sa.ip().is_loopback();
+    }
+
+    let host = if let Some(stripped) = addr.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or(stripped)
+    } else if let Some((h, _)) = addr.rsplit_once(':') {
+        h
+    } else {
+        addr
+    };
+
+    match host.parse::<IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        Err(_) => true,
+    }
+}
+
+impl HttpServerConfig {
+    pub fn bind_addr_is_public(&self) -> bool {
+        bind_addr_is_public(&self.addr)
+    }
+}
+
+enum MaybeTlsStream {
+    Plain(tokio::net::TcpStream),
+    Tls(Box<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>),
+}
+
+impl tokio::io::AsyncRead for MaybeTlsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            Self::Tls(s) => Pin::new(s.as_mut()).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for MaybeTlsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            Self::Tls(s) => Pin::new(s.as_mut()).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_flush(cx),
+            Self::Tls(s) => Pin::new(s.as_mut()).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            Self::Tls(s) => Pin::new(s.as_mut()).poll_shutdown(cx),
+        }
+    }
+}
+
+fn load_tls_acceptor(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<tokio_rustls::TlsAcceptor, Box<dyn std::error::Error>> {
+    use rustls_pki_types::pem::PemObject;
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+
+    let certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_file_iter(cert_path)?.collect::<Result<Vec<_>, _>>()?;
+    if certs.is_empty() {
+        return Err("No certificates found in TLS certificate file".into());
+    }
+
+    let key = PrivateKeyDer::from_pem_file(key_path)?;
+
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_no_client_auth()
+    .with_single_cert(certs, key)?;
+
+    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server_config)))
 }
 
 static IP_RATE_LIMITS: OnceLock<RwLock<HashMap<IpAddr, (Instant, u32)>>> = OnceLock::new();
 type SseSender = tokio::sync::mpsc::Sender<String>;
 static SSE_SESSIONS: OnceLock<RwLock<HashMap<String, SseSender>>> = OnceLock::new();
-static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn get_sse_sessions() -> &'static RwLock<HashMap<String, SseSender>> {
     SSE_SESSIONS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn generate_session_id() -> String {
-    let counter = SESSION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:x}-{:x}", now, counter)
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut s = String::with_capacity(32);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
 }
+
+/// Validate that a session ID is exactly 32 lowercase hex characters.
+fn is_valid_session_id(sid: &str) -> bool {
+    sid.len() == 32 && sid.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+const MAX_SSE_SESSIONS: usize = 1024;
+
+static RATE_LIMIT_PRUNE_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 fn check_ip_rate_limit(ip: IpAddr) -> bool {
     let limits = IP_RATE_LIMITS.get_or_init(|| RwLock::new(HashMap::new()));
     let now = Instant::now();
     let mut guard = limits.write();
+
+    // Periodic pruning: every 500 requests, evict entries older than 5 minutes
+    let count = RATE_LIMIT_PRUNE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if count % 500 == 0 {
+        guard.retain(|_, (ts, _)| now.duration_since(*ts) < Duration::from_secs(300));
+    }
 
     let entry = guard.entry(ip).or_insert((now, 0));
     if now.duration_since(entry.0) > Duration::from_secs(60) {
@@ -55,22 +174,50 @@ pub async fn run_http_server(
     server: Arc<Server>,
     config: HttpServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if bind_addr_is_public(&config.addr) && (config.tls_cert.is_none() || config.tls_key.is_none())
+    {
+        return Err(format!(
+            "Insecure public bind '{}' rejected: HTTP server requires TLS configuration (tls_cert and tls_key) when binding to public addresses (0.0.0.0 or ::)",
+            config.addr
+        ).into());
+    }
+
+    if let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) {
+        if !cert.exists() {
+            return Err(format!("TLS certificate file not found: {}", cert.display()).into());
+        }
+        if !key.exists() {
+            return Err(format!("TLS key file not found: {}", key.display()).into());
+        }
+    }
+
+    let tls_acceptor = match (&config.tls_cert, &config.tls_key) {
+        (Some(cert), Some(key)) => Some(load_tls_acceptor(cert, key)?),
+        _ => None,
+    };
+
     let listener = TcpListener::bind(&config.addr).await?;
+    let scheme = if tls_acceptor.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     info!(
-        "🌐 InterMCP HTTP/SSE Server running at http://{}",
-        config.addr
+        "🌐 InterMCP HTTP/SSE Server running at {}://{}",
+        scheme, config.addr
     );
 
     let auth_token = config.auth_token;
-    let cors_origin = config.cors_origin;
+    let cors_origin = config.cors_origin.map(|o| o.replace(['\r', '\n'], ""));
     let max_conns = config.max_conns.unwrap_or(512);
     let connection_semaphore = Arc::new(Semaphore::new(max_conns));
 
     loop {
-        let (mut socket, peer_addr) = listener.accept().await?;
+        let (raw_socket, peer_addr) = listener.accept().await?;
         let permit = match connection_semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
+                let mut socket = raw_socket;
                 let resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 28\r\nConnection: close\r\n\r\nMax connections limit reached";
                 let _ = socket.write_all(resp.as_bytes()).await;
                 continue;
@@ -78,17 +225,35 @@ pub async fn run_http_server(
         };
 
         if !check_ip_rate_limit(peer_addr.ip()) {
+            let mut socket = raw_socket;
             let resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nRate limit exceeded (60/m)";
             let _ = socket.write_all(resp.as_bytes()).await;
             continue;
         }
 
+        let maybe_acceptor = tls_acceptor.clone();
         let server_ref = Arc::clone(&server);
         let token_ref = auth_token.clone();
         let cors_ref = cors_origin.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
+            let mut socket: MaybeTlsStream = if let Some(acceptor) = maybe_acceptor {
+                match acceptor.accept(raw_socket).await {
+                    Ok(tls_stream) => MaybeTlsStream::Tls(Box::new(tls_stream)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "TLS handshake failed from {}: {}",
+                            peer_addr,
+                            crate::server::redact_for_log(&e.to_string())
+                        );
+                        return;
+                    }
+                }
+            } else {
+                MaybeTlsStream::Plain(raw_socket)
+            };
+
             let handle_conn = async {
                 let mut buffer = Vec::new();
                 let mut temp_buf = [0u8; 4096];
@@ -133,7 +298,9 @@ pub async fn run_http_server(
                 let mut has_host = false;
                 let mut is_sse_accept = false;
                 let mut authorization_header = None;
-                let mut content_length = 0;
+                let mut content_length: Option<usize> = None;
+                let mut bad_content_length = false;
+                let mut has_transfer_encoding_chunked = false;
 
                 for line in &lines[1..] {
                     let lower = line.to_lowercase();
@@ -143,12 +310,38 @@ pub async fn run_http_server(
                         is_sse_accept = true;
                     } else if lower.starts_with("authorization: bearer ") {
                         authorization_header = Some(line[22..].trim().to_string());
+                    } else if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+                        has_transfer_encoding_chunked = true;
                     } else if lower.starts_with("content-length:") {
-                        if let Ok(len) = line[15..].trim().parse::<usize>() {
-                            content_length = len;
+                        let val_str = line[15..].trim();
+                        if let Ok(len) = val_str.parse::<usize>() {
+                            if let Some(existing) = content_length {
+                                if existing != len {
+                                    bad_content_length = true;
+                                }
+                            } else {
+                                content_length = Some(len);
+                            }
+                        } else {
+                            bad_content_length = true;
                         }
                     }
                 }
+
+                if bad_content_length {
+                    let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 30\r\nConnection: close\r\n\r\nConflicting Content-Length";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return;
+                }
+
+                // Finding 4 / AUDIT-04: Reject Transfer-Encoding requests with 400 Bad Request
+                if has_transfer_encoding_chunked {
+                    let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 38\r\nConnection: close\r\n\r\nTransfer-Encoding is not supported";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return;
+                }
+
+                let content_length = content_length.unwrap_or(0);
 
                 if http_version == "HTTP/1.1" && !has_host {
                     let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 20\r\nConnection: close\r\n\r\nMissing Host header";
@@ -157,13 +350,13 @@ pub async fn run_http_server(
                 }
 
                 if let Some(expected_token) = &token_ref {
-                    let authorized = if let Some(token) = authorization_header {
+                    let authorized = if let Some(token) = &authorization_header {
                         token.as_bytes().ct_eq(expected_token.as_bytes()).into()
                     } else {
                         false
                     };
 
-                    let is_public_get = method == "GET" && (path == "/" || path == "/health");
+                    let is_public_get = method == "GET" && path == "/health";
                     if !authorized && !is_public_get {
                         let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
                         let _ = socket.write_all(resp.as_bytes()).await;
@@ -190,7 +383,10 @@ pub async fn run_http_server(
                 }
 
                 let cors_header = match &cors_ref {
-                    Some(origin) => format!("Access-Control-Allow-Origin: {}\r\n", origin),
+                    Some(origin) => {
+                        let clean_origin = origin.replace(['\r', '\n'], "");
+                        format!("Access-Control-Allow-Origin: {}\r\n", clean_origin)
+                    }
                     None => String::new(),
                 };
 
@@ -213,8 +409,11 @@ pub async fn run_http_server(
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                 } else if method == "GET" && path == "/health" {
-                    let status =
-                        "{\"status\":\"healthy\",\"server\":\"intermcp\",\"version\":\"0.1.0\"}";
+                    let status = concat!(
+                        "{\"status\":\"healthy\",\"server\":\"intermcp\",\"version\":\"",
+                        env!("CARGO_PKG_VERSION"),
+                        "\"}"
+                    );
                     let response = format!(
                         "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         cors_header,
@@ -222,7 +421,13 @@ pub async fn run_http_server(
                         status
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
-                } else if method == "GET" && (path == "/sse" || is_sse_accept) {
+                } else if method == "GET" && path == "/sse" && is_sse_accept {
+                    // AUDIT-03: Enforce maximum SSE session count
+                    if get_sse_sessions().read().len() >= MAX_SSE_SESSIONS {
+                        let resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 31\r\nConnection: close\r\n\r\nMaximum SSE sessions reached";
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
+                    }
                     let session_id = generate_session_id();
                     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
                     get_sse_sessions().write().insert(session_id.clone(), tx);
@@ -253,7 +458,15 @@ pub async fn run_http_server(
                             msg = rx.recv() => {
                                 match msg {
                                     Some(payload) => {
-                                        let event = format!("event: message\ndata: {}\n\n", payload);
+                                        // Finding 2: Safe SSE serialization preventing framing injection
+                                        let sanitized = payload.replace("\r\n", "\n").replace('\r', "\n");
+                                        let mut data_lines = String::new();
+                                        for line in sanitized.split('\n') {
+                                            data_lines.push_str("data: ");
+                                            data_lines.push_str(line);
+                                            data_lines.push('\n');
+                                        }
+                                        let event = format!("event: message\n{}\n", data_lines);
                                         if socket.write_all(event.as_bytes()).await.is_err() {
                                             break;
                                         }
@@ -278,16 +491,21 @@ pub async fn run_http_server(
                     let body_slice = &buffer[header_end..header_end + content_length];
                     let body_str = String::from_utf8_lossy(body_slice);
 
-                    let session_id = raw_path
+                    // If sessionId is present in query string, validate format and lookup
+                    let raw_session_id = raw_path
                         .split("sessionId=")
                         .nth(1)
                         .and_then(|s| s.split('&').next());
 
-                    if let Some(resp_json) = server_ref.handle_raw_message(&body_str).await {
-                        if let Some(sid) = session_id {
-                            let sse_tx = get_sse_sessions().read().get(sid).cloned();
+                    if let Some(raw_sid) = raw_session_id {
+                        if is_valid_session_id(raw_sid) {
+                            let sse_tx = get_sse_sessions().read().get(raw_sid).cloned();
                             if let Some(tx) = sse_tx {
-                                let _ = tx.send(resp_json).await;
+                                if let Some(resp_json) =
+                                    server_ref.handle_raw_message(&body_str).await
+                                {
+                                    let _ = tx.send(resp_json).await;
+                                }
                                 let response = format!(
                                     "HTTP/1.1 202 Accepted\r\n{}Content-Type: text/plain\r\nContent-Length: 8\r\nConnection: close\r\n\r\nAccepted",
                                     cors_header
@@ -297,6 +515,16 @@ pub async fn run_http_server(
                                 return;
                             }
                         }
+                        let response = format!(
+                            "HTTP/1.1 404 Not Found\r\n{}Content-Type: text/plain\r\nContent-Length: 20\r\nConnection: close\r\n\r\nSession ID not found",
+                            cors_header
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        let _ = socket.flush().await;
+                        return;
+                    }
+
+                    if let Some(resp_json) = server_ref.handle_raw_message(&body_str).await {
                         let response = format!(
                             "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             cors_header,
@@ -331,6 +559,19 @@ pub async fn run_http_server(
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.flush().await;
                 } else if method == "GET" && path == "/api/pending" {
+                    if let Some(expected_token) = &token_ref {
+                        let authorized = if let Some(token) = &authorization_header {
+                            token.as_bytes().ct_eq(expected_token.as_bytes()).into()
+                        } else {
+                            false
+                        };
+                        if !authorized {
+                            let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                            return;
+                        }
+                    }
+
                     let pending = server_ref
                         .vault_lock()
                         .map(|v| v.list_pending())
@@ -346,6 +587,19 @@ pub async fn run_http_server(
                 } else if (method == "POST" || method == "GET")
                     && (path.starts_with("/api/approve/") || path.starts_with("/approve/"))
                 {
+                    if let Some(expected_token) = &token_ref {
+                        let authorized = if let Some(token) = &authorization_header {
+                            token.as_bytes().ct_eq(expected_token.as_bytes()).into()
+                        } else {
+                            false
+                        };
+                        if !authorized {
+                            let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                            return;
+                        }
+                    }
+
                     let id = path.rsplit('/').next().unwrap_or("");
                     let approved = server_ref
                         .vault_lock()
@@ -366,6 +620,19 @@ pub async fn run_http_server(
                 } else if (method == "POST" || method == "GET")
                     && (path.starts_with("/api/reject/") || path.starts_with("/reject/"))
                 {
+                    if let Some(expected_token) = &token_ref {
+                        let authorized = if let Some(token) = &authorization_header {
+                            token.as_bytes().ct_eq(expected_token.as_bytes()).into()
+                        } else {
+                            false
+                        };
+                        if !authorized {
+                            let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                            return;
+                        }
+                    }
+
                     let id = path.rsplit('/').next().unwrap_or("");
                     let rejected = server_ref
                         .vault_lock()
@@ -400,6 +667,21 @@ pub async fn run_http_server(
     }
 }
 
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn render_dashboard_html(server: &Server) -> String {
     let tool_count = server.tool_count();
     let resource_count = server.resource_count();
@@ -422,9 +704,12 @@ fn render_dashboard_html(server: &Server) -> String {
     } else {
         for p in pending_items {
             let args_str = serde_json::to_string(&p.arguments).unwrap_or_default();
+            let safe_tool = html_escape(&p.tool);
+            let safe_args = html_escape(&args_str);
+            let safe_id = html_escape(&p.id);
             pending_rows.push_str(&format!(
                 "<tr><td class='tool-name'>{}</td><td><code>{}</code></td><td>{}s left</td><td><button onclick=\"fetch('/api/approve/{}', {{method:'POST'}}).then(()=>location.reload())\" style=\"background:#238636;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;\">Approve</button> <button onclick=\"fetch('/api/reject/{}', {{method:'POST'}}).then(()=>location.reload())\" style=\"background:#da3633;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;\">Veto</button></td></tr>",
-                p.tool, args_str, p.remaining_secs, p.id, p.id
+                safe_tool, safe_args, p.remaining_secs, safe_id, safe_id
             ));
         }
     }
@@ -432,12 +717,15 @@ fn render_dashboard_html(server: &Server) -> String {
     let tools = server.list_tool_definitions();
     let mut tool_rows = String::new();
     for t in tools {
+        let safe_name = html_escape(&t.name);
+        let safe_desc = html_escape(&t.description);
         tool_rows.push_str(&format!(
             "<tr><td class='tool-name'>{}</td><td class='tool-desc'>{}</td></tr>",
-            t.name, t.description
+            safe_name, safe_desc
         ));
     }
 
+    let version = env!("CARGO_PKG_VERSION");
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -463,7 +751,7 @@ code {{ font-family: monospace; color: #e6edf3; background: #21262d; padding: 2p
 <body>
 <div class="header">
 <div class="title">InterMCP Live Dashboard</div>
-<div>v0.1.0</div>
+<div>v{version}</div>
 </div>
 <div class="grid">
 <div class="card"><div class="card-label">Registered Tools</div><div class="card-val">{tool_count}</div></div>

@@ -15,47 +15,10 @@ use crate::error::FastMcpError;
 
 /// RFC 8785 JSON Canonicalization Scheme (JCS) serializer.
 /// Produces deterministic, byte-for-byte canonical JSON representations.
+/// Note: Pinned to `serde_jcs = "0.1"` which strictly implements RFC 8785 shortest-round-trip
+/// IEEE 754 float formatting and UTF-16 code unit key sorting for `serde_json::Value`.
 pub fn canonicalize_json(value: &Value) -> Result<Vec<u8>, FastMcpError> {
-    match value {
-        Value::Null => Ok(b"null".to_vec()),
-        Value::Bool(b) => Ok(if *b {
-            b"true".to_vec()
-        } else {
-            b"false".to_vec()
-        }),
-        Value::Number(n) => Ok(n.to_string().into_bytes()),
-        Value::String(s) => serde_json::to_vec(s).map_err(FastMcpError::Serialization),
-        Value::Array(arr) => {
-            let mut out = Vec::new();
-            out.push(b'[');
-            for (i, item) in arr.iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                out.extend_from_slice(&canonicalize_json(item)?);
-            }
-            out.push(b']');
-            Ok(out)
-        }
-        Value::Object(map) => {
-            let mut out = Vec::new();
-            out.push(b'{');
-            let mut sorted_keys: Vec<&String> = map.keys().collect();
-            sorted_keys.sort();
-            for (i, key) in sorted_keys.iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                out.extend_from_slice(
-                    &serde_json::to_vec(key).map_err(FastMcpError::Serialization)?,
-                );
-                out.push(b':');
-                out.extend_from_slice(&canonicalize_json(&map[*key])?);
-            }
-            out.push(b'}');
-            Ok(out)
-        }
-    }
+    serde_jcs::to_vec(value).map_err(FastMcpError::Serialization)
 }
 
 /// Compute SHA-256 digest over RFC 8785 canonical JSON bytes.
@@ -278,10 +241,18 @@ fn chrono_or_fallback_timestamp() -> String {
     }
 }
 
+/// Summary of receipt chain verification.
+///
+/// Note on Tail Truncation (SEC-09):
+/// An adversary with file modification permissions could truncate trailing records from the end of the
+/// receipt chain without invalidating the cryptographic validity of earlier records. To guard against
+/// tail truncation, callers should cross-reference `count` or sequence numbers against external state
+/// or periodic out-of-band audit checkpoints.
 #[derive(Debug)]
 pub struct VerificationSummary {
     pub count: usize,
     pub last_hash: String,
+    pub signatures_verified: bool,
 }
 
 /// Verify an entire chain of signed receipts from a file.
@@ -289,11 +260,13 @@ pub fn verify_receipt_chain_file(
     path: &Path,
     secret_key: Option<&[u8]>,
 ) -> Result<VerificationSummary, FastMcpError> {
+    let signatures_verified = secret_key.is_some();
     if !path.exists() {
         return Ok(VerificationSummary {
             count: 0,
             last_hash: "0000000000000000000000000000000000000000000000000000000000000000"
                 .to_string(),
+            signatures_verified,
         });
     }
 
@@ -354,5 +327,6 @@ pub fn verify_receipt_chain_file(
     Ok(VerificationSummary {
         count: total_verified,
         last_hash: expected_prev_hash,
+        signatures_verified,
     })
 }

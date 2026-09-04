@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::error::FastMcpError;
 use crate::protocol::{CallToolResult, JsonRpcResponse, ToolDefinition};
+use crate::server::redact_for_log;
 use crate::tool::Tool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +27,27 @@ pub struct UpstreamServerConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 }
+
+pub const DANGEROUS_ENV_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "NODE_OPTIONS",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PERL5OPT",
+    "PERL5LIB",
+    "RUBYOPT",
+    "RUBYLIB",
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "PS4",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubConfig {
@@ -47,6 +70,13 @@ pub struct UpstreamHandle {
 
 impl UpstreamHandle {
     pub async fn spawn(config: UpstreamServerConfig) -> Result<Self, FastMcpError> {
+        if config.name.contains("__") {
+            return Err(FastMcpError::SecurityViolation(format!(
+                "Upstream server name '{}' cannot contain '__' to prevent namespace collision",
+                config.name
+            )));
+        }
+
         let (tx, rx) = mpsc::channel(32);
         let name = config.name.clone();
 
@@ -73,7 +103,7 @@ impl UpstreamHandle {
             "method": "initialize",
             "params": {
                 "protocolVersion": "2024-11-05",
-                "clientInfo": { "name": "intermcp-hub", "version": "0.1.0" }
+                "clientInfo": { "name": "intermcp-hub", "version": env!("CARGO_PKG_VERSION") }
             }
         });
         self.send_request(1, req.to_string()).await?;
@@ -144,7 +174,20 @@ impl UpstreamHandle {
             }
         });
 
-        let resp = self.send_request(id, req.to_string()).await?;
+        let timeout_duration = Duration::from_secs(30);
+        let resp =
+            match tokio::time::timeout(timeout_duration, self.send_request(id, req.to_string()))
+                .await
+            {
+                Ok(res) => res?,
+                Err(_) => {
+                    return Err(FastMcpError::ToolExecution(format!(
+                        "Upstream tool execution timed out after {:?}",
+                        timeout_duration
+                    )));
+                }
+            };
+
         if let Some(res) = resp.result {
             let tool_res: CallToolResult =
                 serde_json::from_value(res).map_err(FastMcpError::Serialization)?;
@@ -175,6 +218,7 @@ impl UpstreamSupervisor {
     ) -> Result<
         (
             Child,
+            crate::reaper::ChildIsolationGuard,
             ChildStdin,
             tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
         ),
@@ -187,8 +231,59 @@ impl UpstreamSupervisor {
                 cmd.env(key, val);
             }
         }
+        let is_secret_name = |k: &str| -> bool {
+            let k_upper = k.to_uppercase();
+            k_upper.contains("SECRET")
+                || k_upper.contains("TOKEN")
+                || k_upper.contains("PASSWORD")
+                || k_upper.contains("KEY")
+                || k_upper.contains("AUTH")
+                || k_upper.contains("CREDENTIAL")
+                || k_upper.contains("CRED")
+                || k_upper.contains("PRIVATE")
+                || k_upper.contains("CERT")
+                || k_upper.contains("PASSPHRASE")
+                || k_upper.contains("MNEMONIC")
+                || k_upper.contains("SEED_PHRASE")
+        };
+
+        let looks_like_secret_value = |v: &str| -> bool {
+            let trimmed = v.trim();
+            // Check hex string 32+ characters
+            if trimmed.len() >= 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                return true;
+            }
+            // Check base64-encoded string 32+ characters
+            if trimmed.len() >= 32
+                && trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+            {
+                let has_upper = trimmed.chars().any(|c| c.is_ascii_uppercase());
+                let has_lower = trimmed.chars().any(|c| c.is_ascii_lowercase());
+                let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
+                let has_b64_punct =
+                    trimmed.contains('+') || trimmed.contains('/') || trimmed.contains('=');
+                if (has_upper && has_lower && has_digit) || has_b64_punct {
+                    return true;
+                }
+            }
+            false
+        };
+
+        let filtered_env: std::collections::HashMap<_, _> = config
+            .env
+            .iter()
+            .filter(|(k, v)| {
+                let is_dangerous = DANGEROUS_ENV_VARS
+                    .iter()
+                    .any(|&d| d.eq_ignore_ascii_case(k));
+                !is_dangerous && !is_secret_name(k) && !looks_like_secret_value(v)
+            })
+            .collect();
+
         cmd.args(&config.args)
-            .envs(&config.env)
+            .envs(filtered_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -201,6 +296,14 @@ impl UpstreamSupervisor {
             ))
         })?;
 
+        let guard = match crate::reaper::ChildIsolationGuard::new(&child) {
+            Ok(g) => g,
+            Err(e) => {
+                let _ = child.start_kill();
+                return Err(e);
+            }
+        };
+
         let stdin = child.stdin.take().ok_or_else(|| {
             FastMcpError::ToolExecution("Failed to acquire upstream stdin".into())
         })?;
@@ -209,7 +312,7 @@ impl UpstreamSupervisor {
         })?;
         let reader = BufReader::new(stdout).lines();
 
-        Ok((child, stdin, reader))
+        Ok((child, guard, stdin, reader))
     }
 
     async fn run(mut self) {
@@ -222,26 +325,31 @@ impl UpstreamSupervisor {
         let mut respawn_attempts = 0;
 
         loop {
-            let (child, mut stdin, mut reader) = match Self::spawn_process(&self.config).await {
-                Ok(res) => {
-                    respawn_attempts = 0;
-                    res
-                }
-                Err(e) => {
-                    error!("Failed to spawn upstream '{}': {}", self.config.name, e);
-                    if respawn_attempts < backoff_delays.len() {
-                        tokio::time::sleep(backoff_delays[respawn_attempts]).await;
-                        respawn_attempts += 1;
-                        continue;
-                    } else {
-                        error!(
-                            "Max respawn attempts reached for '{}'. Terminating.",
-                            self.config.name
-                        );
-                        return;
+            let (child, guard, mut stdin, mut reader) =
+                match Self::spawn_process(&self.config).await {
+                    Ok(res) => {
+                        respawn_attempts = 0;
+                        res
                     }
-                }
-            };
+                    Err(e) => {
+                        error!(
+                            "Failed to spawn upstream '{}': {}",
+                            redact_for_log(&self.config.name),
+                            redact_for_log(&e.to_string())
+                        );
+                        if respawn_attempts < backoff_delays.len() {
+                            tokio::time::sleep(backoff_delays[respawn_attempts]).await;
+                            respawn_attempts += 1;
+                            continue;
+                        } else {
+                            error!(
+                                "Max respawn attempts reached for '{}'. Terminating.",
+                                redact_for_log(&self.config.name)
+                            );
+                            return;
+                        }
+                    }
+                };
 
             let pending_map: PendingMap = Arc::new(RwLock::new(HashMap::new()));
 
@@ -268,7 +376,10 @@ impl UpstreamSupervisor {
                         }
                     }
                 }
-                warn!("Upstream '{}' stdout stream closed", name_clone);
+                warn!(
+                    "Upstream '{}' stdout stream closed",
+                    redact_for_log(&name_clone)
+                );
             });
 
             let mut process_failed = false;
@@ -295,6 +406,9 @@ impl UpstreamSupervisor {
             }
 
             reader_task.abort();
+            // AUDIT-06: Explicitly kill process group before dropping child
+            // to ensure grandchildren (if any spawned with setsid) are terminated
+            guard.kill_group();
             drop(child);
 
             for (_, tx) in pending_map.write().drain() {
@@ -307,14 +421,15 @@ impl UpstreamSupervisor {
             if respawn_attempts < backoff_delays.len() {
                 info!(
                     "Auto-respawning upstream '{}' in {:?}...",
-                    self.config.name, backoff_delays[respawn_attempts]
+                    redact_for_log(&self.config.name),
+                    backoff_delays[respawn_attempts]
                 );
                 tokio::time::sleep(backoff_delays[respawn_attempts]).await;
                 respawn_attempts += 1;
             } else {
                 error!(
                     "Upstream '{}' exceeded maximum restart attempts",
-                    self.config.name
+                    redact_for_log(&self.config.name)
                 );
                 break;
             }
@@ -330,15 +445,67 @@ pub struct PinnedToolContract {
     pub schema_hash: String,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct SupplyChainFirewall {
     pinned_contracts: Arc<RwLock<HashMap<String, PinnedToolContract>>>,
     quarantined_upstreams: Arc<RwLock<HashSet<String>>>,
+    quarantine_path: Option<PathBuf>,
+}
+
+impl Default for SupplyChainFirewall {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SupplyChainFirewall {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            pinned_contracts: Arc::new(RwLock::new(HashMap::new())),
+            quarantined_upstreams: Arc::new(RwLock::new(HashSet::new())),
+            quarantine_path: None,
+        }
+    }
+
+    pub fn with_quarantine_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        let p = path.into();
+        let mut set = self.quarantined_upstreams.read().clone();
+        if p.exists() {
+            if let Ok(file) = std::fs::File::open(&p) {
+                if let Ok(loaded) = serde_json::from_reader::<_, HashSet<String>>(file) {
+                    set.extend(loaded);
+                }
+            }
+        }
+        self.quarantined_upstreams = Arc::new(RwLock::new(set));
+        self.quarantine_path = Some(p);
+        self
+    }
+
+    pub fn with_receipts_dir<P: Into<PathBuf>>(self, receipts_dir: P) -> Self {
+        self.with_quarantine_path(receipts_dir.into().join("quarantine.json"))
+    }
+
+    fn persist_quarantine(&self) {
+        if let Some(path) = &self.quarantine_path {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let set = self.quarantined_upstreams.read();
+            if let Ok(json_bytes) = serde_json::to_vec_pretty(&*set) {
+                let parent_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let temp_path = parent_dir.join(format!(
+                    ".quarantine.{}.tmp",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                if std::fs::write(&temp_path, &json_bytes).is_ok() {
+                    let _ = std::fs::rename(&temp_path, path);
+                }
+            }
+        }
     }
 
     pub fn compute_hashes(desc: &str, schema: &Value) -> (String, String) {
@@ -346,10 +513,15 @@ impl SupplyChainFirewall {
         desc_hasher.update(desc.as_bytes());
         let desc_hash = format!("{:x}", desc_hasher.finalize());
 
-        let mut schema_hasher = Sha256::new();
-        let schema_bytes = serde_json::to_vec(schema).unwrap_or_default();
-        schema_hasher.update(&schema_bytes);
-        let schema_hash = format!("{:x}", schema_hasher.finalize());
+        let schema_hash = match crate::receipts::hash_canonical_json(schema) {
+            Ok(h) => h,
+            Err(_) => {
+                let mut schema_hasher = Sha256::new();
+                let schema_bytes = serde_json::to_vec(schema).unwrap_or_default();
+                schema_hasher.update(&schema_bytes);
+                format!("{:x}", schema_hasher.finalize())
+            }
+        };
 
         (desc_hash, schema_hash)
     }
@@ -375,6 +547,7 @@ impl SupplyChainFirewall {
                 self.quarantined_upstreams
                     .write()
                     .insert(upstream_name.to_string());
+                self.persist_quarantine();
                 return Err(FastMcpError::SecurityViolation(format!(
                     "Supply-Chain Firewall: Upstream '{}' drifted tool '{}' definition. Quarantining upstream.",
                     upstream_name, tool.name
@@ -401,6 +574,7 @@ impl SupplyChainFirewall {
         self.quarantined_upstreams
             .write()
             .insert(upstream_name.to_string());
+        self.persist_quarantine();
     }
 
     pub fn list_contracts(&self) -> Vec<PinnedToolContract> {
@@ -456,22 +630,49 @@ pub async fn load_hub_tools_with_firewall(
     let mut registered_names = HashSet::new();
 
     for srv_cfg in config.servers {
-        info!("Spawning upstream server '{}'...", srv_cfg.name);
+        if srv_cfg.name.contains("__")
+            || srv_cfg.name.starts_with('_')
+            || srv_cfg.name.ends_with('_')
+        {
+            return Err(FastMcpError::SecurityViolation(format!(
+                "Upstream server name '{}' cannot contain '__' or start/end with '_' to prevent namespace collision",
+                srv_cfg.name
+            )));
+        }
+        info!(
+            "Spawning upstream server '{}'...",
+            redact_for_log(&srv_cfg.name)
+        );
         match UpstreamHandle::spawn(srv_cfg.clone()).await {
             Ok(handle) => match handle.list_tools().await {
                 Ok(tools) => {
-                    info!("Discovered {} tools from '{}'", tools.len(), srv_cfg.name);
+                    info!(
+                        "Discovered {} tools from '{}'",
+                        tools.len(),
+                        redact_for_log(&srv_cfg.name)
+                    );
                     let shared_handle = Arc::new(handle);
                     for tool in tools {
+                        if tool.name.contains("__") || tool.name.starts_with('_') {
+                            warn!(
+                                "Supply-Chain Collision: Skipping tool '{}' with invalid namespace characters from upstream '{}'.",
+                                redact_for_log(&tool.name),
+                                redact_for_log(&srv_cfg.name)
+                            );
+                            continue;
+                        }
                         let prefixed = format!("{}__{}", srv_cfg.name, tool.name);
                         if registered_names.contains(&prefixed) {
-                            warn!("Supply-Chain Collision: Skipping duplicate tool '{}' from upstream '{}'.", prefixed, srv_cfg.name);
+                            warn!("Supply-Chain Collision: Skipping duplicate tool '{}' from upstream '{}'.", redact_for_log(&prefixed), redact_for_log(&srv_cfg.name));
                             continue;
                         }
 
                         if let Some(fw) = &firewall {
                             if let Err(e) = fw.verify_and_pin(&srv_cfg.name, &tool) {
-                                error!("Supply-Chain Firewall drift detected: {}", e);
+                                error!(
+                                    "Supply-Chain Firewall drift detected: {}",
+                                    redact_for_log(&e.to_string())
+                                );
                                 return Err(e);
                             }
                         }
@@ -489,11 +690,19 @@ pub async fn load_hub_tools_with_firewall(
                     }
                 }
                 Err(e) => {
-                    error!("Failed to list tools from '{}': {}", srv_cfg.name, e);
+                    error!(
+                        "Failed to list tools from '{}': {}",
+                        redact_for_log(&srv_cfg.name),
+                        redact_for_log(&e.to_string())
+                    );
                 }
             },
             Err(e) => {
-                error!("Failed to initialize upstream '{}': {}", srv_cfg.name, e);
+                error!(
+                    "Failed to initialize upstream '{}': {}",
+                    redact_for_log(&srv_cfg.name),
+                    redact_for_log(&e.to_string())
+                );
             }
         }
     }
@@ -502,5 +711,9 @@ pub async fn load_hub_tools_with_firewall(
 }
 
 pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, FastMcpError> {
-    load_hub_tools_with_firewall(config, Some(SupplyChainFirewall::new())).await
+    load_hub_tools_with_firewall(
+        config,
+        Some(SupplyChainFirewall::new().with_receipts_dir("receipts")),
+    )
+    .await
 }
