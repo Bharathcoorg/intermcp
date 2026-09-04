@@ -8,7 +8,7 @@ version = "0.2.0"
 authors = [
   { name = "Bharath B R", email = "bharathcoorg7@gmail.com" },
 ]
-description = "Ultra-Fast, Safe Model Context Protocol (MCP) Python Client for InterMCP Trust Runtime"
+description = "Ultra-Fast, Safe Model Context Protocol (MCP) Python Client for Interlayer Blockchain InterMCP Trust Runtime"
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
