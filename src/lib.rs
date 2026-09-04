@@ -25,7 +25,7 @@ pub use discovery::create_tool_discovery_tool;
 pub use error::FastMcpError;
 pub use guardrails::GuardrailPolicy;
 pub use http_server::{run_http_server, HttpServerConfig};
-pub use hub::{load_hub_tools, HubConfig, UpstreamServerConfig};
+pub use hub::{load_hub_tools, load_hub_tools_with_firewall, HubConfig, PinnedToolContract, SupplyChainFirewall, UpstreamServerConfig};
 pub use manifest::{load_manifest_tools, DeclarativeTool, ManifestConfig, ManifestTool};
 pub use prompt::{Prompt, SimplePrompt};
 pub use protocol::{CallToolResult, ContentItem, JsonRpcRequest, JsonRpcResponse, ToolDefinition};

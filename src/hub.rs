@@ -1,7 +1,8 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -300,6 +301,88 @@ impl UpstreamSupervisor {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PinnedToolContract {
+    pub upstream_name: String,
+    pub tool_name: String,
+    pub description_hash: String,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SupplyChainFirewall {
+    pinned_contracts: Arc<RwLock<HashMap<String, PinnedToolContract>>>,
+    quarantined_upstreams: Arc<RwLock<HashSet<String>>>,
+}
+
+impl SupplyChainFirewall {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn compute_hashes(desc: &str, schema: &Value) -> (String, String) {
+        let mut desc_hasher = Sha256::new();
+        desc_hasher.update(desc.as_bytes());
+        let desc_hash = format!("{:x}", desc_hasher.finalize());
+
+        let mut schema_hasher = Sha256::new();
+        let schema_bytes = serde_json::to_vec(schema).unwrap_or_default();
+        schema_hasher.update(&schema_bytes);
+        let schema_hash = format!("{:x}", schema_hasher.finalize());
+
+        (desc_hash, schema_hash)
+    }
+
+    pub fn verify_and_pin(
+        &self,
+        upstream_name: &str,
+        tool: &ToolDefinition,
+    ) -> Result<PinnedToolContract, FastMcpError> {
+        if self.quarantined_upstreams.read().contains(upstream_name) {
+            return Err(FastMcpError::SecurityViolation(format!(
+                "Upstream server '{}' is quarantined due to detected supply-chain drift.",
+                upstream_name
+            )));
+        }
+
+        let (desc_hash, schema_hash) = Self::compute_hashes(&tool.description, &tool.input_schema);
+        let contract_key = format!("{}__{}", upstream_name, tool.name);
+
+        let mut pinned = self.pinned_contracts.write();
+        if let Some(existing) = pinned.get(&contract_key) {
+            if existing.description_hash != desc_hash || existing.schema_hash != schema_hash {
+                self.quarantined_upstreams.write().insert(upstream_name.to_string());
+                return Err(FastMcpError::SecurityViolation(format!(
+                    "Supply-Chain Firewall: Upstream '{}' drifted tool '{}' definition. Quarantining upstream.",
+                    upstream_name, tool.name
+                )));
+            }
+            Ok(existing.clone())
+        } else {
+            let contract = PinnedToolContract {
+                upstream_name: upstream_name.to_string(),
+                tool_name: tool.name.clone(),
+                description_hash: desc_hash,
+                schema_hash,
+            };
+            pinned.insert(contract_key, contract.clone());
+            Ok(contract)
+        }
+    }
+
+    pub fn is_quarantined(&self, upstream_name: &str) -> bool {
+        self.quarantined_upstreams.read().contains(upstream_name)
+    }
+
+    pub fn quarantine(&self, upstream_name: &str) {
+        self.quarantined_upstreams.write().insert(upstream_name.to_string());
+    }
+
+    pub fn list_contracts(&self) -> Vec<PinnedToolContract> {
+        self.pinned_contracts.read().values().cloned().collect()
+    }
+}
+
 pub struct ProxiedTool {
     #[allow(dead_code)]
     upstream_name: String,
@@ -308,6 +391,7 @@ pub struct ProxiedTool {
     description: String,
     input_schema: Value,
     handle: Arc<UpstreamHandle>,
+    firewall: Option<SupplyChainFirewall>,
 }
 
 #[async_trait::async_trait]
@@ -325,15 +409,26 @@ impl Tool for ProxiedTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<CallToolResult, FastMcpError> {
+        if let Some(fw) = &self.firewall {
+            if fw.is_quarantined(&self.upstream_name) {
+                return Err(FastMcpError::SecurityViolation(format!(
+                    "Execution vetoed: Upstream server '{}' is quarantined by Supply-Chain Firewall.",
+                    self.upstream_name
+                )));
+            }
+        }
         self.handle
             .call_tool(&self.original_tool_name, arguments)
             .await
     }
 }
 
-pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, FastMcpError> {
+pub async fn load_hub_tools_with_firewall(
+    config: HubConfig,
+    firewall: Option<SupplyChainFirewall>,
+) -> Result<Vec<Box<dyn Tool>>, FastMcpError> {
     let mut all_tools: Vec<Box<dyn Tool>> = Vec::new();
-    let mut registered_names = std::collections::HashSet::new();
+    let mut registered_names = HashSet::new();
 
     for srv_cfg in config.servers {
         info!("Spawning upstream server '{}'...", srv_cfg.name);
@@ -348,6 +443,14 @@ pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, Fas
                             warn!("Supply-Chain Collision: Skipping duplicate tool '{}' from upstream '{}'.", prefixed, srv_cfg.name);
                             continue;
                         }
+
+                        if let Some(fw) = &firewall {
+                            if let Err(e) = fw.verify_and_pin(&srv_cfg.name, &tool) {
+                                error!("Supply-Chain Firewall drift detected: {}", e);
+                                return Err(e);
+                            }
+                        }
+
                         registered_names.insert(prefixed.clone());
                         all_tools.push(Box::new(ProxiedTool {
                             upstream_name: srv_cfg.name.clone(),
@@ -356,6 +459,7 @@ pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, Fas
                             description: tool.description,
                             input_schema: tool.input_schema,
                             handle: Arc::clone(&shared_handle),
+                            firewall: firewall.clone(),
                         }));
                     }
                 }
@@ -370,4 +474,8 @@ pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, Fas
     }
 
     Ok(all_tools)
+}
+
+pub async fn load_hub_tools(config: HubConfig) -> Result<Vec<Box<dyn Tool>>, FastMcpError> {
+    load_hub_tools_with_firewall(config, Some(SupplyChainFirewall::new())).await
 }

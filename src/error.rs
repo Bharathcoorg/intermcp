@@ -22,6 +22,9 @@ pub enum FastMcpError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
 }
 
 impl FastMcpError {
@@ -34,6 +37,7 @@ impl FastMcpError {
             FastMcpError::ToolExecution(_) => -32000,  // Server error
             FastMcpError::Internal(_) => -32603,       // Internal error
             FastMcpError::Io(_) => -32001,
+            FastMcpError::SecurityViolation(_) => -32002, // Security veto / policy violation
         }
     }
 }

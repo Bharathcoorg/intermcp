@@ -19,6 +19,22 @@ pub struct HttpServerConfig {
 }
 
 static IP_RATE_LIMITS: OnceLock<RwLock<HashMap<IpAddr, (Instant, u32)>>> = OnceLock::new();
+type SseSender = tokio::sync::mpsc::Sender<String>;
+static SSE_SESSIONS: OnceLock<RwLock<HashMap<String, SseSender>>> = OnceLock::new();
+static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn get_sse_sessions() -> &'static RwLock<HashMap<String, SseSender>> {
+    SSE_SESSIONS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn generate_session_id() -> String {
+    let counter = SESSION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:x}-{:x}", now, counter)
+}
 
 fn check_ip_rate_limit(ip: IpAddr) -> bool {
     let limits = IP_RATE_LIMITS.get_or_init(|| RwLock::new(HashMap::new()));
@@ -147,7 +163,8 @@ pub async fn run_http_server(
                         false
                     };
 
-                    if !authorized && path != "/health" && path != "/" {
+                    let is_public_get = method == "GET" && (path == "/" || path == "/health");
+                    if !authorized && !is_public_get {
                         let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
                         let _ = socket.write_all(resp.as_bytes()).await;
                         return;
@@ -204,34 +221,90 @@ pub async fn run_http_server(
                         status
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
-                } else if (method == "GET" || method == "POST") && (path == "/sse" || is_sse_accept) {
+                } else if method == "GET" && (path == "/sse" || is_sse_accept) {
+                    let session_id = generate_session_id();
+                    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+                    get_sse_sessions().write().insert(session_id.clone(), tx);
+
                     let sse_init = format!(
                         "HTTP/1.1 200 OK\r\n{}Content-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
                         cors_header
                     );
                     if socket.write_all(sse_init.as_bytes()).await.is_err() {
+                        get_sse_sessions().write().remove(&session_id);
+                        return;
+                    }
+
+                    // Emit official MCP 2024-11-05 endpoint event
+                    let endpoint_event = format!("event: endpoint\ndata: /message?sessionId={}\n\n", session_id);
+                    if socket.write_all(endpoint_event.as_bytes()).await.is_err() {
+                        get_sse_sessions().write().remove(&session_id);
                         return;
                     }
                     let _ = socket.flush().await;
 
-                    if method == "POST" {
-                        let body_slice = &buffer[header_end..header_end + content_length];
-                        let body_str = String::from_utf8_lossy(body_slice);
-
-                        if let Some(resp_json) = server_ref.handle_raw_message(&body_str).await {
-                            let event = format!("event: message\ndata: {}\n\n", resp_json);
-                            let _ = socket.write_all(event.as_bytes()).await;
-                            let _ = socket.flush().await;
+                    let mut ping_interval = tokio::time::interval(Duration::from_secs(15));
+                    loop {
+                        tokio::select! {
+                            msg = rx.recv() => {
+                                match msg {
+                                    Some(payload) => {
+                                        let event = format!("event: message\ndata: {}\n\n", payload);
+                                        if socket.write_all(event.as_bytes()).await.is_err() {
+                                            break;
+                                        }
+                                        let _ = socket.flush().await;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            _ = ping_interval.tick() => {
+                                let ping_msg = ": ping\n\n";
+                                if socket.write_all(ping_msg.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                                let _ = socket.flush().await;
+                            }
                         }
                     }
+                    get_sse_sessions().write().remove(&session_id);
+                } else if method == "POST" && (path == "/message" || raw_path.starts_with("/message?")) {
+                    let body_slice = &buffer[header_end..header_end + content_length];
+                    let body_str = String::from_utf8_lossy(body_slice);
 
-                    let mut ping_interval = tokio::time::interval(Duration::from_secs(5));
-                    for _ in 0..12 {
-                        ping_interval.tick().await;
-                        let ping_msg = "event: ping\ndata: {}\n\n";
-                        if socket.write_all(ping_msg.as_bytes()).await.is_err() {
-                            break;
+                    let session_id = raw_path
+                        .split("sessionId=")
+                        .nth(1)
+                        .and_then(|s| s.split('&').next());
+
+                    if let Some(resp_json) = server_ref.handle_raw_message(&body_str).await {
+                        if let Some(sid) = session_id {
+                            let sse_tx = get_sse_sessions().read().get(sid).cloned();
+                            if let Some(tx) = sse_tx {
+                                let _ = tx.send(resp_json).await;
+                                let response = format!(
+                                    "HTTP/1.1 202 Accepted\r\n{}Content-Type: text/plain\r\nContent-Length: 8\r\nConnection: close\r\n\r\nAccepted",
+                                    cors_header
+                                );
+                                let _ = socket.write_all(response.as_bytes()).await;
+                                let _ = socket.flush().await;
+                                return;
+                            }
                         }
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            cors_header,
+                            resp_json.len(),
+                            resp_json
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        let _ = socket.flush().await;
+                    } else {
+                        let response = format!(
+                            "HTTP/1.1 204 No Content\r\n{}Connection: close\r\n\r\n",
+                            cors_header
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
                         let _ = socket.flush().await;
                     }
                 } else if method == "POST" && (path == "/mcp" || path == "/") {
@@ -312,7 +385,7 @@ pub async fn run_http_server(
                 }
             };
 
-            let _ = tokio::time::timeout(Duration::from_secs(15), handle_conn).await;
+            let _ = tokio::time::timeout(Duration::from_secs(3600), handle_conn).await;
         });
     }
 }
