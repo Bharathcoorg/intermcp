@@ -781,3 +781,24 @@ code {{ font-family: monospace; color: #e6edf3; background: #21262d; padding: 2p
 </html>"#
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_escape_all_dangerous_characters() {
+        let input = "<script>alert(`hello ${user}` & 'win');</script>\"";
+        let escaped = html_escape(input);
+        assert!(!escaped.contains('`'));
+        assert!(!escaped.contains('$'));
+        assert!(!escaped.contains('<'));
+        assert!(!escaped.contains('>'));
+        assert!(escaped.contains("&#x60;"));
+        assert!(escaped.contains("&#36;"));
+        assert!(escaped.contains("&lt;"));
+        assert!(escaped.contains("&gt;"));
+        assert!(escaped.contains("&quot;"));
+        assert!(escaped.contains("&#39;"));
+    }
+}

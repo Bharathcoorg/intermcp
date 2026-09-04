@@ -118,3 +118,40 @@ async fn test_policy_engine_enforces_fs_list_dir() {
     let text = res["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("matches denied pattern"));
 }
+
+#[tokio::test]
+async fn test_policy_engine_enforces_fs_search_text() {
+    use intermcp::protocol::JsonRpcRequest;
+    use intermcp::sandbox::SandboxPolicy;
+    use serde_json::json;
+
+    let toml_str = r#"
+        mode = "enforcing"
+
+        [filesystem]
+        denied = [".git", "restricted_zone"]
+    "#;
+    let engine = PolicyEngine::from_toml(toml_str).unwrap();
+
+    let mut server = intermcp::Server::new("test-server", "1.0.0").with_policy_engine(engine);
+    server.add_tool(intermcp::tools::fs::create_fs_search_tool(
+        SandboxPolicy::unrestricted(),
+    ));
+
+    // Attempting to search inside a denied directory must be blocked by PolicyEngine
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(1)),
+        method: "tools/call".to_string(),
+        params: Some(json!({
+            "name": "fs_search_text",
+            "arguments": { "query": "secret_key", "dir": "./restricted_zone" }
+        })),
+    };
+
+    let resp = server.handle_request(req).await.unwrap();
+    let res = resp.result.unwrap();
+    assert_eq!(res.get("isError").and_then(|v| v.as_bool()), Some(true));
+    let text = res["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("matches denied pattern"));
+}
