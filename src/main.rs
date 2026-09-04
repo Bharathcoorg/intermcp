@@ -71,6 +71,12 @@ enum Commands {
         /// List of tools requiring human supervisor approval (comma-separated)
         #[arg(long)]
         time_lock: Option<String>,
+        /// Path to write ADR 001 signed execution receipts log
+        #[arg(long)]
+        receipts: Option<String>,
+        /// Secret key for HMAC signing of execution receipts
+        #[arg(long)]
+        signing_key: Option<String>,
     },
     /// Replay an .imcp session flight trace against the server and output diff results
     Replay {
@@ -81,6 +87,14 @@ enum Commands {
     VerifyAudit {
         /// Path to SMAC audit chain log file
         log: String,
+    },
+    /// Cryptographically verify the provenance and integrity of ADR 001 signed receipts
+    VerifyReceipts {
+        /// Path to signed execution receipts log file
+        log: String,
+        /// Optional secret key for HMAC signature verification
+        #[arg(long)]
+        key: Option<String>,
     },
     /// One-Click Auto-Setup: Automatically configure Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Zed, and Continue
     Setup {
@@ -164,6 +178,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         record: None,
         audit_log: None,
         time_lock: None,
+        receipts: None,
+        signing_key: None,
     }) {
         Commands::Serve {
             plugin,
@@ -181,6 +197,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             record,
             audit_log,
             time_lock,
+            receipts,
+            signing_key,
         } => {
             let policy_file = config.as_deref().or_else(|| {
                 if std::path::Path::new("intermcp.toml").exists() {
@@ -283,6 +301,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server = server.with_time_locked_vault(intermcp::TimeLockedVault::new(tools, 20));
             }
 
+            if let Some(r_path) = receipts {
+                let key_bytes = signing_key.as_deref().unwrap_or("intermcp-default-secret-key").as_bytes();
+                server = server.with_receipt_book(intermcp::ReceiptBook::new(std::path::Path::new(&r_path), key_bytes, "intermcp-node")?);
+            }
+
             if smart_discovery {
                 let defs = server.list_tool_definitions();
                 server.add_tool(create_tool_discovery_tool(defs));
@@ -329,6 +352,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     eprintln!("❌ Tampering or chain corruption detected: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::VerifyReceipts { log, key } => {
+            println!("\n🔐 Cryptographically verifying ADR 001 signed receipts '{}'...", log);
+            let key_bytes = key.as_deref().map(|k| k.as_bytes());
+            match intermcp::verify_receipt_chain_file(std::path::Path::new(&log), key_bytes) {
+                Ok(summary) => {
+                    println!("✅ ADR 001 Signed Receipts authenticated successfully!");
+                    println!("   • Verified receipts: {}", summary.count);
+                    println!("   • Hash chain tip: {}", summary.last_hash);
+                }
+                Err(e) => {
+                    eprintln!("❌ Receipt cryptographic verification failure: {}", e);
                     std::process::exit(1);
                 }
             }

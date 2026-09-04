@@ -114,6 +114,7 @@ pub fn create_shell_exec_tool_with_allowlist(extra_allowed: Vec<String>) -> Box<
                 };
 
                 apply_isolated_environment(&mut cmd);
+                crate::reaper::configure_child_isolation(&mut cmd);
 
                 let execution_future = cmd.output();
                 let result = match timeout(Duration::from_secs(30), execution_future).await {

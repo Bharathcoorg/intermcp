@@ -9,6 +9,8 @@ pub mod hub;
 pub mod manifest;
 pub mod prompt;
 pub mod protocol;
+pub mod reaper;
+pub mod receipts;
 pub mod record;
 pub mod resource;
 pub mod sandbox;
@@ -29,6 +31,7 @@ pub use hub::{load_hub_tools, load_hub_tools_with_firewall, HubConfig, PinnedToo
 pub use manifest::{load_manifest_tools, DeclarativeTool, ManifestConfig, ManifestTool};
 pub use prompt::{Prompt, SimplePrompt};
 pub use protocol::{CallToolResult, ContentItem, JsonRpcRequest, JsonRpcResponse, ToolDefinition};
+pub use receipts::{canonicalize_json, hash_canonical_json, verify_receipt_chain_file, ExecutionReceipt, ReceiptBook, ReceiptStatus, SignedReceiptRecord, VerificationSummary};
 pub use record::{FrameDirection, ReplaySummary, SessionFrame, SessionRecorder, SessionReplayer};
 pub use resource::{Resource, SimpleResource};
 pub use sandbox::SandboxPolicy;

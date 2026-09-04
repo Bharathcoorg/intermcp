@@ -14,6 +14,7 @@ use crate::error::FastMcpError;
 use crate::guardrails::GuardrailPolicy;
 use crate::prompt::Prompt;
 use crate::protocol::*;
+use crate::receipts::{ReceiptBook, ReceiptStatus};
 use crate::record::{FrameDirection, SessionRecorder};
 use crate::resource::Resource;
 use crate::smac::SmacLogger;
@@ -76,6 +77,7 @@ pub struct Server {
     recorder: Option<SessionRecorder>,
     smac: Option<Arc<SmacLogger>>,
     vault_lock: Option<Arc<TimeLockedVault>>,
+    receipt_book: Option<Arc<ReceiptBook>>,
 }
 
 impl Server {
@@ -92,6 +94,7 @@ impl Server {
             recorder: None,
             smac: None,
             vault_lock: None,
+            receipt_book: None,
         }
     }
 
@@ -102,6 +105,11 @@ impl Server {
 
     pub fn with_smac(mut self, smac: SmacLogger) -> Self {
         self.smac = Some(Arc::new(smac));
+        self
+    }
+
+    pub fn with_receipt_book(mut self, receipt_book: ReceiptBook) -> Self {
+        self.receipt_book = Some(Arc::new(receipt_book));
         self
     }
 
@@ -370,6 +378,7 @@ impl Server {
 
                                 let tool_clone = Arc::clone(tool);
                                 let args_clone = arguments.clone();
+                                let start_instant = std::time::Instant::now();
 
                                 let task = tokio::spawn(async move {
                                     tool_clone.execute(args_clone).await
@@ -444,6 +453,18 @@ impl Server {
                                         if let Some(smac) = &self.smac {
                                             smac.record(name, &arguments, &json_res);
                                         }
+                                        if let Some(receipt_book) = &self.receipt_book {
+                                            let schema_hash = crate::receipts::hash_canonical_json(&tool.input_schema()).unwrap_or_default();
+                                            let _ = receipt_book.record_execution(
+                                                "session-1",
+                                                name,
+                                                &schema_hash,
+                                                &arguments,
+                                                &json_res,
+                                                start_instant.elapsed().as_micros() as u64,
+                                                ReceiptStatus::Success,
+                                            );
+                                        }
                                         if tool.is_cacheable() {
                                             if let Some(cache) = &self.cache {
                                                 cache.set(name, &arguments, json_res.clone(), None);
@@ -453,6 +474,18 @@ impl Server {
                                     }
                                     Err(e) => {
                                         let call_err = CallToolResult::error(e.to_string());
+                                        if let Some(receipt_book) = &self.receipt_book {
+                                            let schema_hash = crate::receipts::hash_canonical_json(&tool.input_schema()).unwrap_or_default();
+                                            let _ = receipt_book.record_execution(
+                                                "session-1",
+                                                name,
+                                                &schema_hash,
+                                                &arguments,
+                                                &json!(call_err),
+                                                start_instant.elapsed().as_micros() as u64,
+                                                ReceiptStatus::ToolError,
+                                            );
+                                        }
                                         Some(JsonRpcResponse::success(req_id, json!(call_err)))
                                     }
                                 }

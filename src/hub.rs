@@ -178,8 +178,8 @@ impl UpstreamSupervisor {
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
+            .stderr(Stdio::inherit());
+        crate::reaper::configure_child_isolation(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
             FastMcpError::ToolExecution(format!(
