@@ -4,16 +4,30 @@ Connect InterMCP to Anthropic's Claude Desktop application in under 60 seconds.
 
 ---
 
-## 1. Prerequisites
+## ⚡ 1-Click Auto-Setup (Fastest)
+
+Configure Claude Desktop automatically in 1 second without manual JSON editing:
+
+```bash
+# Using installed binary
+intermcp setup
+
+# Or via NPX (Zero install)
+npx intermcp setup
+```
+
+This automatically locates your Claude Desktop config, creates a verified `.json.bak` backup, and safely merges InterMCP!
+
+---
+
+## 📁 Manual Setup & Prerequisites
 
 - **Claude Desktop** installed: [Download Claude Desktop](https://claude.ai/download)
 - **InterMCP** installed:
   ```bash
-  # Via Cargo (Rust)
   cargo install intermcp
-
-  # Or via NPX (Zero compilation needed)
-  npx intermcp serve
+  # Or via shell installer
+  curl -fsSL https://raw.githubusercontent.com/Bharathcoorg/intermcp/main/install.sh | sh
   ```
 
 ---

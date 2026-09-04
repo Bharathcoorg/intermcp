@@ -201,6 +201,31 @@ intermcp serve --http 127.0.0.1:8080 --token my-secret-token
 ```
 Supports official `GET /sse` endpoint discovery and `POST /message?sessionId=...` bidirectional streaming.
 
+### 13. Formal Declarative Policy Compiler & Runtime Gate (`src/policy.rs`)
+Enforces declarative TOML/JSON enterprise security policies covering allowed filesystem paths (`read_only` vs `read_write`), shell binary allowlists, blocked argument patterns, sliding-window rate limiting, and output byte limits:
+```toml
+[policy]
+mode = "enforcing"
+
+[filesystem]
+read_only = ["./docs"]
+read_write = ["./src", "./target"]
+denied = [".env*", "**/*.pem", "**/*.key"]
+
+[shell]
+allowed_binaries = ["git", "cargo", "npm", "python"]
+require_approval = ["git push", "npm publish"]
+
+[limits]
+max_calls_per_minute = 60
+```
+
+### 14. Dynamic Data-Flow Taint Tracking (`src/taint.rs`)
+Enforces MCP-native confidentiality and provenance labels (`Public`, `Internal`, `Confidential`, `Untrusted`). Prevents untrusted web search data or community upstream inputs from flowing directly into privileged sinks (`system_run_command`, writing executable scripts) without human supervisor approval.
+
+### 15. Sandboxed WebAssembly Tool Runner (`src/wasm.rs`)
+Execute third-party community tools with total host isolation. Validates standard WASM v1 binaries, enforces strict linear memory limits, and prevents any unauthorized host filesystem or network access.
+
 ---
 
 ## 🌐 Protocol Support
@@ -329,6 +354,8 @@ intermcp doctor
 
 ## 📚 Developer Guides
 
+- 📖 [Google Antigravity IDE Integration Guide](docs/antigravity_ide.md)
+- 📖 [VS Code, Kilo Code & Codex Setup Guide](docs/vscode_kilo.md)
 - 📖 [Claude Desktop Setup Guide](docs/claude_desktop.md)
 - 📖 [Cursor IDE Integration Guide](docs/cursor_ide.md)
 - 📖 [Writing Custom Tools & Prompts](docs/custom_tools.md)

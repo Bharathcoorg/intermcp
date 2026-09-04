@@ -7,6 +7,13 @@
   "bin": {
     "intermcp": "./bin/cli.js"
   },
+  "files": [
+    "bin",
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build:rust": "cargo build --release",
     "test": "cargo test",

@@ -2,9 +2,25 @@
 
 Cursor natively supports the Model Context Protocol (MCP), enabling Cursor's AI Composer and Agent to use local tools with sub-millisecond execution speeds.
 
+## ⚡ 1-Click Global Setup (Fastest)
+
+Configure Cursor globally for all projects in 1 second:
+
+```bash
+# Using installed binary
+intermcp setup
+
+# Or via NPX
+npx intermcp setup
+```
+
+This automatically discovers `~/.cursor/mcp.json`, backs up existing settings, and registers InterMCP with zero manual work.
+
 ---
 
-## 1. Project-Level Configuration
+## 📁 Manual Configuration
+
+### Project-Level Configuration
 
 In the root of your project directory, create a `.cursor` folder with an `mcp.json` file:
 
