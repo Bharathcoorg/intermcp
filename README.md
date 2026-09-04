@@ -12,20 +12,37 @@
 ### Ultra-Fast, Safe Model Context Protocol (MCP) Engine & Multiplexing Hub in Pure Rust
 **Sub-millisecond dispatch • 457,000+ ops/sec* • < 3.8 MB RAM • SafeFS Sandboxing • 1-Click Multi-IDE Setup**
 
-*Originally engineered for low-latency AI tool execution on the **Interlayer** blockchain; 100% open-source for the global developer ecosystem.*
+*Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer Blockchain and open for all.*
 
-[![Crates.io](https://img.shields.io/badge/crates.io-v0.2.0-orange.svg?style=for-the-badge&logo=rust)](https://crates.io/crates/intermcp)
-[![npm](https://img.shields.io/badge/npm-v0.2.0-CB3837.svg?style=for-the-badge&logo=npm)](https://www.npmjs.com/package/intermcp)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](LICENSE)
-[![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg?style=for-the-badge&logo=githubactions)](https://github.com/Bharathcoorg/intermcp)
-[![Memory](https://img.shields.io/badge/RAM-<3.8MB-purple.svg?style=for-the-badge)](https://github.com/Bharathcoorg/intermcp)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-green.svg?style=for-the-badge)](CONTRIBUTING.md)
+<p align="center">
+  <a href="https://crates.io/crates/intermcp"><img src="https://img.shields.io/crates/v/intermcp.svg?style=for-the-badge&logo=rust" alt="Crates.io" /></a>
+  <a href="https://www.npmjs.com/package/intermcp"><img src="https://img.shields.io/npm/v/intermcp.svg?style=for-the-badge&logo=npm" alt="npm" /></a>
+  <a href="https://pypi.org/project/intermcp/"><img src="https://img.shields.io/pypi/v/intermcp.svg?style=for-the-badge&logo=pypi" alt="PyPI" /></a>
+  <a href="https://github.com/Bharathcoorg/intermcp/releases/tag/v0.2.0"><img src="https://img.shields.io/github/v/release/Bharathcoorg/intermcp?style=for-the-badge&logo=github" alt="GitHub release" /></a>
+  <a href="https://github.com/Bharathcoorg/intermcp/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Bharathcoorg/intermcp/ci.yml?branch=main&style=for-the-badge&logo=githubactions" alt="CI Status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License: MIT" /></a>
+</p>
 
-[Quickstart](#-1-click-installation--setup) • [Benchmarks](#-benchmarks) • [Key Features](#-key-features) • [Rust](#-rust-sdk-usage) • [TypeScript](#-typescript--node-sdk) • [Python](#-python-client--agent-usage) • [Go](#-go-client-usage) • [PHP](#-php-client-usage) • [Guides](#-developer-guides) • [Security](#-security--vulnerability-reporting)
+[Quickstart](#-1-click-installation--setup) • [Packages](#-official-packages--sdks) • [Benchmarks](#-benchmarks) • [Key Features](#-key-features) • [Rust](#-rust-sdk-usage) • [TypeScript](#-typescript--node-sdk) • [Python](#-python-client--agent-usage) • [Go](#-go-client-usage) • [PHP](#-php-client-usage) • [Security](#-security--vulnerability-reporting)
 
 ---
 
 </div>
+
+## 📦 Official Packages & SDKs
+
+InterMCP core and multi-language client SDKs are officially published and immediately available across all major package ecosystems:
+
+| Ecosystem | Registry / Source | Install Command | Registry Links |
+| :--- | :--- | :--- | :--- |
+| **Rust** | **crates.io** | `cargo add intermcp` | [![crates.io](https://img.shields.io/crates/v/intermcp.svg)](https://crates.io/crates/intermcp) • [crates.io/crates/intermcp](https://crates.io/crates/intermcp) |
+| **JavaScript / TypeScript** | **npm** | `npm install intermcp` | [![npm](https://img.shields.io/npm/v/intermcp.svg)](https://www.npmjs.com/package/intermcp) • [npmjs.com/package/intermcp](https://www.npmjs.com/package/intermcp) |
+| **Python** | **PyPI** | `pip install intermcp` | [![PyPI](https://img.shields.io/pypi/v/intermcp.svg)](https://pypi.org/project/intermcp/) • [pypi.org/project/intermcp](https://pypi.org/project/intermcp/) |
+| **Go** | **Go Modules** | `go get github.com/Bharathcoorg/intermcp/go/intermcp@v0.2.0` | [pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp](https://pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp) |
+| **PHP** | **Packagist** | `composer require bharathcoorg/intermcp` | [packagist.org/packages/bharathcoorg/intermcp](https://packagist.org/packages/bharathcoorg/intermcp) |
+| **Standalone Binaries** | **GitHub Releases** | Prebuilt binaries for Linux, macOS (ARM & Intel), Windows | [GitHub v0.2.0 Release Assets](https://github.com/Bharathcoorg/intermcp/releases/tag/v0.2.0) |
+
+---
 
 ## 💡 Overview
 
