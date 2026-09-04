@@ -1,0 +1,44 @@
+name: Bug Report
+description: File a bug report or reproducible defect in InterMCP
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue! Please ensure you have tested with the latest release (`intermcp --version`).
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps or commands to reproduce the behavior.
+      placeholder: |
+        1. Run 'intermcp serve --sandbox ./src'
+        2. Execute tool '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment & Versions
+      description: Operating System, Architecture, InterMCP version, and AI Client (Cursor, Claude Desktop, etc.).
+      value: |
+        - OS: [e.g. Windows 11 / Ubuntu 22.04 / macOS Sonoma]
+        - InterMCP Version: [e.g. 0.2.0]
+        - AI Client: [e.g. Cursor, Claude Desktop, Antigravity IDE]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs / Output
+      description: Please copy and paste any relevant terminal or log output.
+      render: shell

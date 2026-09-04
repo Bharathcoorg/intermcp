@@ -400,10 +400,10 @@ InterMCP supports remote serving over HTTP and Server-Sent Events (SSE) with man
 
 ```bash
 # Local development (loopback)
-intermcp --http 127.0.0.1:8080 --token my-secret-token
+intermcp serve --http 127.0.0.1:8080 --token my-secret-token
 
 # Production with TLS termination (rustls)
-intermcp --http 0.0.0.0:8443 --token my-secret-token \
+intermcp serve --http 0.0.0.0:8443 --token my-secret-token \
   --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
 ```
 
