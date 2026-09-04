@@ -613,10 +613,17 @@ impl Server {
                                 || name == "fs_write_file"
                                 || name == "fs_list_dir"
                                 || name == "fs_list_directory"
+                                || name == "fs_search_text"
                             {
-                                let path_str =
-                                    arguments.get("path").and_then(|v| v.as_str()).unwrap_or(
-                                        if name == "fs_list_dir" || name == "fs_list_directory" {
+                                let path_str = arguments
+                                    .get("path")
+                                    .or_else(|| arguments.get("dir"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(
+                                        if name == "fs_list_dir"
+                                            || name == "fs_list_directory"
+                                            || name == "fs_search_text"
+                                        {
                                             "."
                                         } else {
                                             ""

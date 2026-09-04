@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::error::FastMcpError;
 use crate::protocol::CallToolResult;
-use crate::sandbox::SandboxPolicy;
+use crate::sandbox::{HardlinkExt, SandboxPolicy};
 use crate::tool::{SimpleTool, Tool};
 
 pub fn create_fs_read_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
@@ -45,6 +45,11 @@ pub fn create_fs_read_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                     if sym_meta.file_type().is_symlink() {
                         return Ok(CallToolResult::error(
                             "Security error: Symlink access is prohibited".to_string(),
+                        ));
+                    }
+                    if sym_meta.file_type().is_hardlink() || sym_meta.is_hardlink() {
+                        return Ok(CallToolResult::error(
+                            "SafeFS Violation: Hardlink detected at target. Hardlinks are prohibited.".to_string(),
                         ));
                     }
                 }
@@ -112,6 +117,11 @@ pub fn create_fs_write_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                             "Security error: Cannot overwrite symlink target".to_string(),
                         ));
                     }
+                    if sym_meta.file_type().is_hardlink() || sym_meta.is_hardlink() {
+                        return Ok(CallToolResult::error(
+                            "SafeFS Violation: Cannot overwrite hardlink target. Hardlinks are prohibited.".to_string(),
+                        ));
+                    }
                 }
 
                 if let Some(parent) = safe_path.parent() {
@@ -153,6 +163,19 @@ pub fn create_fs_list_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                     Ok(p) => p,
                     Err(e) => return Ok(CallToolResult::error(e.to_string())),
                 };
+
+                if let Ok(sym_meta) = safe_path.symlink_metadata() {
+                    if sym_meta.file_type().is_symlink() {
+                        return Ok(CallToolResult::error(
+                            "Security error: Symlink access is prohibited".to_string(),
+                        ));
+                    }
+                    if sym_meta.file_type().is_hardlink() || sym_meta.is_hardlink() {
+                        return Ok(CallToolResult::error(
+                            "SafeFS Violation: Hardlink detected at target. Hardlinks are prohibited.".to_string(),
+                        ));
+                    }
+                }
 
                 let read_dir = match fs::read_dir(&safe_path) {
                     Ok(rd) => rd,

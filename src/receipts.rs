@@ -218,13 +218,42 @@ impl ReceiptBook {
 
         let signed = receipt.sign(&guard.secret_key, &guard.signer_id)?;
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&guard.file_path)?;
-
         let line = serde_json::to_string(&signed).map_err(FastMcpError::Serialization)?;
-        writeln!(file, "{}", line)?;
+
+        let parent = guard
+            .file_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let temp_name = format!(
+            ".receipt_tmp_{}_{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let temp_path = parent.join(temp_name);
+
+        {
+            let mut temp_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&temp_path)?;
+
+            if guard.file_path.exists() {
+                let mut orig_file = File::open(&guard.file_path)?;
+                std::io::copy(&mut orig_file, &mut temp_file)?;
+            }
+
+            writeln!(temp_file, "{}", line)?;
+            temp_file.sync_all()?;
+        }
+
+        std::fs::rename(&temp_path, &guard.file_path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            FastMcpError::Io(e)
+        })?;
 
         guard.prev_hash = signed.receipt_hash.clone();
         guard.sequence += 1;

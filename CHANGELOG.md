@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - 2026-09-04
 
 ### Security & Hardening
+- **Fix A / MEDIUM**: Prevented SafeFS hardlink bypasses by implementing `HardlinkExt` and rejecting hardlink targets and ancestors in `SandboxPolicy::validate_path` and `src/tools/fs.rs`.
+- **Fix B / MEDIUM**: Eliminated ADR 001 receipt partial-write corruption hazards by writing lines to same-directory temporary file, calling `sync_all`, performing atomic rename, and updating hash/sequence only upon success (`src/receipts.rs`).
+- **Fix C / MEDIUM**: Hardened POSIX child process isolation against terminal signal race conditions by ignoring `SIGTTOU`, `SIGTTIN`, and `SIGTSTP` after `setpgid` in `pre_exec` (`src/reaper.rs`).
+- **Fix D / MEDIUM**: Added graceful fallback on Windows Job Object creation or assignment failure by logging warnings and falling back to `kill_on_drop` process reaping (`src/reaper.rs`).
+- **Fix E / LOW**: Completed dashboard HTML escaping by adding backtick (&#x60;) and dollar-sign (&#36;) entity escaping (`src/http_server.rs`).
+- **Fix F / LOW**: Included `fs_search_text` in `PolicyEngine` filesystem evaluation to enforce denied pattern checks across pattern searches (`src/server.rs`).
 - **Pass 2 - Finding 1 / MEDIUM**: Fixed PolicyEngine tool-name check typo by matching `fs_list_dir` and `fs_list_directory` with default path handling for omitted parameters, ensuring directory listing policies are strictly enforced (`src/server.rs`).
 - **Pass 2 - Finding 2 / LOW**: Fixed ADR 001 receipt `session_id` inconsistency by attributing successful executions to the instance `&self.session_id` rather than phantom `"session-1"` (`src/server.rs`).
 - **Pass 2 - Finding 3 / LOW**: Hardened `Dashboard` subcommand by adding `--token`, `--tls-cert`, and `--tls-key` CLI options, passing authentication token to HTTP config, and rejecting public binds without token or TLS (`src/main.rs`).

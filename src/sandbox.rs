@@ -1,6 +1,33 @@
 use crate::error::FastMcpError;
 use std::path::{Component, Path, PathBuf};
 
+pub trait HardlinkExt {
+    fn is_hardlink(&self) -> bool;
+}
+
+impl HardlinkExt for std::fs::FileType {
+    fn is_hardlink(&self) -> bool {
+        false
+    }
+}
+
+impl HardlinkExt for std::fs::Metadata {
+    fn is_hardlink(&self) -> bool {
+        if !self.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            self.nlink() > 1
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+}
+
 const DEFAULT_SENSITIVE_FILES: &[&str] = &[
     ".env",
     ".env.local",
@@ -265,6 +292,12 @@ impl SandboxPolicy {
                             ancestor.display()
                         )));
                     }
+                    if meta.file_type().is_hardlink() || meta.is_hardlink() {
+                        return Err(FastMcpError::ToolExecution(format!(
+                            "SafeFS Violation: Hardlink detected at '{}'. Hardlinks are prohibited.",
+                            ancestor.display()
+                        )));
+                    }
                 }
             }
             match ancestor.parent() {
@@ -293,6 +326,12 @@ impl SandboxPolicy {
                 if meta.file_type().is_symlink() {
                     return Err(FastMcpError::ToolExecution(format!(
                         "SafeFS Violation: Symlink detected at target '{}'. Symlinks are prohibited.",
+                        target_to_check.display()
+                    )));
+                }
+                if meta.file_type().is_hardlink() || meta.is_hardlink() {
+                    return Err(FastMcpError::ToolExecution(format!(
+                        "SafeFS Violation: Hardlink detected at '{}'. Hardlinks are prohibited.",
                         target_to_check.display()
                     )));
                 }

@@ -121,6 +121,9 @@ pub fn configure_child_isolation(cmd: &mut tokio::process::Command) {
         cmd.pre_exec(|| {
             // Set new process group on POSIX so killpg kills all children
             let _ = libc::setpgid(0, 0);
+            let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+            let _ = libc::signal(libc::SIGTTIN, libc::SIG_IGN);
+            let _ = libc::signal(libc::SIGTSTP, libc::SIG_IGN);
             Ok(())
         });
     }
@@ -142,22 +145,22 @@ impl ChildIsolationGuard {
     pub fn try_new(child: &tokio::process::Child) -> Result<Self, FastMcpError> {
         #[cfg(windows)]
         {
-            let job = windows::ProcessJobGroup::new().ok_or_else(|| {
-                FastMcpError::ToolExecution(
-                    "Failed to create Windows Job Object for process isolation".into(),
-                )
-            })?;
+            let job = match windows::ProcessJobGroup::new() {
+                Some(j) => j,
+                None => {
+                    tracing::warn!("Failed to create Windows Job Object for process isolation; falling back to kill_on_drop");
+                    return Ok(Self { job: None });
+                }
+            };
             if let Some(handle) = child.raw_handle() {
                 let assigned = unsafe { job.assign(handle) };
                 if !assigned {
-                    return Err(FastMcpError::ToolExecution(
-                        "Failed to assign child process to Windows Job Object".into(),
-                    ));
+                    tracing::warn!("Failed to assign child process to Windows Job Object; falling back to kill_on_drop");
+                    return Ok(Self { job: None });
                 }
             } else {
-                return Err(FastMcpError::ToolExecution(
-                    "Missing child process raw handle for Windows Job Object isolation".into(),
-                ));
+                tracing::warn!("Missing child process raw handle for Windows Job Object isolation; falling back to kill_on_drop");
+                return Ok(Self { job: None });
             }
             Ok(Self { job: Some(job) })
         }

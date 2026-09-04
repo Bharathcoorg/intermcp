@@ -676,6 +676,8 @@ fn html_escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
+            '`' => out.push_str("&#x60;"),
+            '$' => out.push_str("&#36;"),
             _ => out.push(c),
         }
     }
