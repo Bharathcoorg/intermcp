@@ -109,7 +109,12 @@ pub fn create_shell_exec_tool_with_allowlist(extra_allowed: Vec<String>) -> Box<
                 #[cfg(target_os = "windows")]
                 let is_builtin = tokens
                     .first()
-                    .map(|s| matches!(s.to_lowercase().as_str(), "echo" | "dir" | "type" | "cls" | "cd"))
+                    .map(|s| {
+                        matches!(
+                            s.to_lowercase().as_str(),
+                            "echo" | "dir" | "type" | "cls" | "cd"
+                        )
+                    })
                     .unwrap_or(false);
                 #[cfg(not(target_os = "windows"))]
                 let is_builtin = false;
