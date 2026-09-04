@@ -224,4 +224,9 @@ async fn test_server_with_signed_receipts_integration() {
     let summary = verify_receipt_chain_file(path, Some(key)).unwrap();
     assert_eq!(summary.count, 1);
     assert!(!summary.last_hash.is_empty());
+
+    // Verify session ID matches server session ID and does not use hardcoded phantom session-1
+    let raw_receipt_content = std::fs::read_to_string(path).unwrap();
+    assert!(raw_receipt_content.contains(server.session_id()));
+    assert!(!raw_receipt_content.contains("\"session_id\":\"session-1\""));
 }

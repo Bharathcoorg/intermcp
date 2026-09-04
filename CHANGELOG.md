@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - 2026-09-04
 
 ### Security & Hardening
+- **Pass 2 - Finding 1 / MEDIUM**: Fixed PolicyEngine tool-name check typo by matching `fs_list_dir` and `fs_list_directory` with default path handling for omitted parameters, ensuring directory listing policies are strictly enforced (`src/server.rs`).
+- **Pass 2 - Finding 2 / LOW**: Fixed ADR 001 receipt `session_id` inconsistency by attributing successful executions to the instance `&self.session_id` rather than phantom `"session-1"` (`src/server.rs`).
+- **Pass 2 - Finding 3 / LOW**: Hardened `Dashboard` subcommand by adding `--token`, `--tls-cert`, and `--tls-key` CLI options, passing authentication token to HTTP config, and rejecting public binds without token or TLS (`src/main.rs`).
+- **Pass 2 - Finding 4 / MEDIUM**: Verified Go SDK handshake deadlock prevention by acquiring mutex for subprocess setup only and releasing before `c.Request("initialize", ...)` (`go/intermcp/client.go`).
 - **F-08 / CRITICAL**: Integrated declarative `PolicyEngine` into `Server::handle_request` and CLI `--config` loader, enforcing path rules, shell execution allowlists, sliding-window rate limits, and output byte ceilings (`src/server.rs`, `src/main.rs`).
 - **F-01 / HIGH**: Fixed SSE endpoint routing hijack by restricting SSE dispatch strictly to `method == "GET" && path == "/sse" && is_sse_accept` (`src/http_server.rs`).
 - **F-02 / HIGH**: Implemented standard multi-line SSE event serialization (`data: ` prefix per line) preventing SSE event framing injection via unescaped payload newlines (`src/http_server.rs`).

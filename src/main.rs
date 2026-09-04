@@ -119,6 +119,15 @@ enum Commands {
         /// Port or address to serve the dashboard on (default: '127.0.0.1:4040')
         #[arg(short, long, default_value = "127.0.0.1:4040")]
         addr: String,
+        /// Secret Bearer token for Dashboard authentication (required when bound to public addresses)
+        #[arg(long)]
+        token: Option<String>,
+        /// Path to TLS certificate PEM file for HTTPS/TLS termination
+        #[arg(long)]
+        tls_cert: Option<String>,
+        /// Path to TLS private key PEM file for HTTPS/TLS termination
+        #[arg(long)]
+        tls_key: Option<String>,
     },
     /// Universal MCP Hub: Multiplex & aggregate multiple external MCP servers into ONE fast pipe
     Hub {
@@ -491,20 +500,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("\n🎉 Auto-configuration complete! Simply restart your AI editor to use your tools.\n");
         }
-        Commands::Dashboard { addr } => {
+        Commands::Dashboard {
+            addr,
+            token,
+            tls_cert,
+            tls_key,
+        } => {
+            if intermcp::http_server::bind_addr_is_public(&addr) {
+                if token.is_none() {
+                    eprintln!(
+                        "Error: Insecure public bind '{}' rejected. Dashboard requires --token when bound to public addresses.",
+                        addr
+                    );
+                    std::process::exit(1);
+                }
+                if tls_cert.is_none() || tls_key.is_none() {
+                    eprintln!(
+                        "Error: Insecure public bind '{}' rejected. Dashboard requires TLS (--tls-cert and --tls-key) on public binds (0.0.0.0 or ::).",
+                        addr
+                    );
+                    std::process::exit(1);
+                }
+            }
             let server = Arc::new(intermcp::create_default_server());
+            let scheme = if tls_cert.is_some() && tls_key.is_some() {
+                "https"
+            } else {
+                "http"
+            };
             println!("\n🚀 Launching InterMCP Flight Recorder Live Dashboard...");
-            println!("   URL: http://{}", addr);
+            println!("   URL: {}://{}", scheme, addr);
+            if token.is_some() {
+                println!("   Authentication: Bearer Token Enabled");
+            }
             println!("   Press Ctrl+C to stop.\n");
             run_http_server(
                 server,
                 HttpServerConfig {
                     addr,
-                    auth_token: None,
+                    auth_token: token,
                     cors_origin: None,
                     max_conns: None,
-                    tls_cert: None,
-                    tls_key: None,
+                    tls_cert: tls_cert.map(PathBuf::from),
+                    tls_key: tls_key.map(PathBuf::from),
                 },
             )
             .await?;

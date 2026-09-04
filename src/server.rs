@@ -288,6 +288,10 @@ impl Server {
         }
     }
 
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn with_policy_engine(mut self, engine: PolicyEngine) -> Self {
         self.policy_engine = Some(Arc::new(engine));
         self
@@ -607,11 +611,18 @@ impl Server {
                             }
                             if name == "fs_read_file"
                                 || name == "fs_write_file"
+                                || name == "fs_list_dir"
                                 || name == "fs_list_directory"
                             {
-                                if let Some(path_str) =
-                                    arguments.get("path").and_then(|v| v.as_str())
-                                {
+                                let path_str =
+                                    arguments.get("path").and_then(|v| v.as_str()).unwrap_or(
+                                        if name == "fs_list_dir" || name == "fs_list_directory" {
+                                            "."
+                                        } else {
+                                            ""
+                                        },
+                                    );
+                                if !path_str.is_empty() {
                                     let is_write = name == "fs_write_file";
                                     if let Err(e) = engine
                                         .check_filesystem(std::path::Path::new(path_str), is_write)
@@ -784,7 +795,7 @@ impl Server {
                                             )
                                             .unwrap_or_default();
                                             let _ = receipt_book.record_execution(
-                                                "session-1",
+                                                &self.session_id,
                                                 name,
                                                 &schema_hash,
                                                 &arguments,
