@@ -6,9 +6,8 @@ fn test_block_reserved_ntfs_device_names() {
     let policy = SandboxPolicy::unrestricted();
 
     let devices = [
-        "CON", "con", "PRN", "prn", "AUX", "aux", "NUL", "nul",
-        "COM1", "com1", "COM9", "com9", "LPT1", "lpt1", "LPT9", "lpt9",
-        "CON.txt", "aux.json", "nul.dat",
+        "CON", "con", "PRN", "prn", "AUX", "aux", "NUL", "nul", "COM1", "com1", "COM9", "com9",
+        "LPT1", "lpt1", "LPT9", "lpt9", "CON.txt", "aux.json", "nul.dat",
     ];
 
     for dev in devices {

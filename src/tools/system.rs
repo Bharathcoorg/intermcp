@@ -9,12 +9,24 @@ use crate::protocol::CallToolResult;
 use crate::tool::{SimpleTool, Tool};
 
 const DEFAULT_ALLOWED_BINARIES: &[&str] = &[
-    "git", "ls", "cat", "grep", "echo", "pwd", "cargo", "npm", "node", "python", "python3", "curl", "rg",
+    "git", "ls", "cat", "grep", "echo", "pwd", "cargo", "npm", "node", "python", "python3", "curl",
+    "rg",
 ];
 
 pub const SAFE_ENV_VARS: &[&str] = &[
-    "PATH", "Path", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP",
-    "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "HOME", "LANG", "LC_ALL", "TERM",
+    "PATH",
+    "Path",
+    "SYSTEMROOT",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERPROFILE",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TERM",
 ];
 
 pub fn apply_isolated_environment(cmd: &mut Command) {
@@ -83,12 +95,16 @@ pub fn create_shell_exec_tool_with_allowlist(extra_allowed: Vec<String>) -> Box<
                     )));
                 }
 
-                let is_chained = cmd_str.contains(';') || cmd_str.contains('&') || cmd_str.contains('|') || cmd_str.contains('\n');
+                let is_chained = cmd_str.contains(';')
+                    || cmd_str.contains('&')
+                    || cmd_str.contains('|')
+                    || cmd_str.contains('\n');
                 let tokens = tokenize(cmd_str);
                 let first_token = tokens.first().map(|s| s.to_lowercase()).unwrap_or_default();
 
                 #[cfg(target_os = "windows")]
-                let is_builtin = matches!(first_token.as_str(), "echo" | "dir" | "type" | "cls" | "cd");
+                let is_builtin =
+                    matches!(first_token.as_str(), "echo" | "dir" | "type" | "cls" | "cd");
                 #[cfg(not(target_os = "windows"))]
                 let is_builtin = false;
 
@@ -277,7 +293,9 @@ pub fn validate_shell_command(cmd: &str, extra_allowed: &[String]) -> Result<(),
                 || raw.contains("| powershell")
                 || raw.contains("| cmd"))
         {
-            return Err("Unchecked remote code execution pipeline (curl/base64 | sh) is prohibited".into());
+            return Err(
+                "Unchecked remote code execution pipeline (curl/base64 | sh) is prohibited".into(),
+            );
         }
 
         if joined_sub.contains("/dev/tcp/")
@@ -311,7 +329,9 @@ fn split_chained_commands(cmd: &str) -> Vec<String> {
         } else if !in_single_quote && !in_double_quote {
             if c == ';' || c == '\n' {
                 parts.push(std::mem::take(&mut current));
-            } else if ((c == '&' && chars[i + 1] == '&') || (c == '|' && chars[i + 1] == '|')) && i + 1 < len {
+            } else if ((c == '&' && chars[i + 1] == '&') || (c == '|' && chars[i + 1] == '|'))
+                && i + 1 < len
+            {
                 parts.push(std::mem::take(&mut current));
                 i += 1;
             } else if c == '|' || c == '&' {
@@ -366,10 +386,7 @@ fn extract_binary_name(raw: &str) -> String {
     }
 
     let p = std::path::Path::new(s);
-    let stem = p
-        .file_stem()
-        .and_then(|f| f.to_str())
-        .unwrap_or(s);
+    let stem = p.file_stem().and_then(|f| f.to_str()).unwrap_or(s);
 
     stem.to_string()
 }

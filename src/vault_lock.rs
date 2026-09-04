@@ -88,10 +88,16 @@ impl TimeLockedVault {
             Ok(Ok(approved)) => {
                 self.pending.write().remove(&id);
                 if approved {
-                    info!("✅ Tool '{}' [ID: {}] APPROVED by supervisor", tool_name, id);
+                    info!(
+                        "✅ Tool '{}' [ID: {}] APPROVED by supervisor",
+                        tool_name, id
+                    );
                     Ok(true)
                 } else {
-                    warn!("❌ Tool '{}' [ID: {}] REJECTED by supervisor", tool_name, id);
+                    warn!(
+                        "❌ Tool '{}' [ID: {}] REJECTED by supervisor",
+                        tool_name, id
+                    );
                     Ok(false)
                 }
             }

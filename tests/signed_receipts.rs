@@ -1,5 +1,7 @@
 use intermcp::protocol::{CallToolResult, JsonRpcRequest};
-use intermcp::receipts::{canonicalize_json, hash_canonical_json, verify_receipt_chain_file, ReceiptBook, ReceiptStatus};
+use intermcp::receipts::{
+    canonicalize_json, hash_canonical_json, verify_receipt_chain_file, ReceiptBook, ReceiptStatus,
+};
 use intermcp::tool::SimpleTool;
 use intermcp::Server;
 use serde_json::json;
@@ -50,29 +52,36 @@ fn test_signed_receipt_chain_generation_and_verification() {
     let output = json!({"status": "ok", "lines": 42});
 
     // Record receipt 1
-    let r1 = book.record_execution(
-        "sess-1",
-        "fs_read",
-        "schema_hash_1",
-        &input,
-        &output,
-        250,
-        ReceiptStatus::Success,
-    ).unwrap();
+    let r1 = book
+        .record_execution(
+            "sess-1",
+            "fs_read",
+            "schema_hash_1",
+            &input,
+            &output,
+            250,
+            ReceiptStatus::Success,
+        )
+        .unwrap();
 
     assert_eq!(r1.receipt.sequence, 1);
-    assert_eq!(r1.receipt.prev_receipt_hash, "0000000000000000000000000000000000000000000000000000000000000000");
+    assert_eq!(
+        r1.receipt.prev_receipt_hash,
+        "0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Record receipt 2
-    let r2 = book.record_execution(
-        "sess-1",
-        "system_info",
-        "schema_hash_2",
-        &json!({}),
-        &json!({"os": "windows"}),
-        120,
-        ReceiptStatus::Success,
-    ).unwrap();
+    let r2 = book
+        .record_execution(
+            "sess-1",
+            "system_info",
+            "schema_hash_2",
+            &json!({}),
+            &json!({"os": "windows"}),
+            120,
+            ReceiptStatus::Success,
+        )
+        .unwrap();
 
     assert_eq!(r2.receipt.sequence, 2);
     assert_eq!(r2.receipt.prev_receipt_hash, r1.receipt_hash);
@@ -83,8 +92,11 @@ fn test_signed_receipt_chain_generation_and_verification() {
     assert_eq!(summary.last_hash, r2.receipt_hash);
 
     // Verify with invalid key fails
-    let err = verify_receipt_chain_file(path, Some(b"wrong-key")).expect_err("Wrong key must fail verification");
-    assert!(err.to_string().contains("cryptographic signature verification failed"));
+    let err = verify_receipt_chain_file(path, Some(b"wrong-key"))
+        .expect_err("Wrong key must fail verification");
+    assert!(err
+        .to_string()
+        .contains("cryptographic signature verification failed"));
 }
 
 #[test]
@@ -94,15 +106,34 @@ fn test_signed_receipt_tamper_detection() {
     let key = b"my-signing-key";
 
     let book = ReceiptBook::new(path, key, "node-1").unwrap();
-    book.record_execution("s1", "tool_a", "h1", &json!({}), &json!({}), 50, ReceiptStatus::Success).unwrap();
-    book.record_execution("s1", "tool_b", "h2", &json!({}), &json!({}), 60, ReceiptStatus::Success).unwrap();
+    book.record_execution(
+        "s1",
+        "tool_a",
+        "h1",
+        &json!({}),
+        &json!({}),
+        50,
+        ReceiptStatus::Success,
+    )
+    .unwrap();
+    book.record_execution(
+        "s1",
+        "tool_b",
+        "h2",
+        &json!({}),
+        &json!({}),
+        60,
+        ReceiptStatus::Success,
+    )
+    .unwrap();
 
     // Read content and alter 1 byte in the input hash of receipt 1
     let content = std::fs::read_to_string(path).unwrap();
     let tampered = content.replacen("tool_a", "tool_x", 1);
     std::fs::write(path, tampered).unwrap();
 
-    let err = verify_receipt_chain_file(path, Some(key)).expect_err("Tampered receipt must fail verification");
+    let err = verify_receipt_chain_file(path, Some(key))
+        .expect_err("Tampered receipt must fail verification");
     assert!(err.to_string().contains("verification failed"));
 }
 

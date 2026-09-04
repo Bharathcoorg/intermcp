@@ -80,7 +80,11 @@ impl UpstreamHandle {
         Ok(())
     }
 
-    async fn send_request(&self, id: u64, payload: String) -> Result<JsonRpcResponse, FastMcpError> {
+    async fn send_request(
+        &self,
+        id: u64,
+        payload: String,
+    ) -> Result<JsonRpcResponse, FastMcpError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let hub_req = HubRequest {
             id,
@@ -166,7 +170,16 @@ impl UpstreamSupervisor {
         Self { config, rx }
     }
 
-    async fn spawn_process(config: &UpstreamServerConfig) -> Result<(Child, ChildStdin, tokio::io::Lines<BufReader<tokio::process::ChildStdout>>), FastMcpError> {
+    async fn spawn_process(
+        config: &UpstreamServerConfig,
+    ) -> Result<
+        (
+            Child,
+            ChildStdin,
+            tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        ),
+        FastMcpError,
+    > {
         let mut cmd = Command::new(&config.command);
         cmd.env_clear();
         for &key in crate::tools::system::SAFE_ENV_VARS {
@@ -221,14 +234,16 @@ impl UpstreamSupervisor {
                         respawn_attempts += 1;
                         continue;
                     } else {
-                        error!("Max respawn attempts reached for '{}'. Terminating.", self.config.name);
+                        error!(
+                            "Max respawn attempts reached for '{}'. Terminating.",
+                            self.config.name
+                        );
                         return;
                     }
                 }
             };
 
-            let pending_map: PendingMap =
-                Arc::new(RwLock::new(HashMap::new()));
+            let pending_map: PendingMap = Arc::new(RwLock::new(HashMap::new()));
 
             let reader_pending = Arc::clone(&pending_map);
             let name_clone = self.config.name.clone();
@@ -290,11 +305,17 @@ impl UpstreamSupervisor {
             }
 
             if respawn_attempts < backoff_delays.len() {
-                info!("Auto-respawning upstream '{}' in {:?}...", self.config.name, backoff_delays[respawn_attempts]);
+                info!(
+                    "Auto-respawning upstream '{}' in {:?}...",
+                    self.config.name, backoff_delays[respawn_attempts]
+                );
                 tokio::time::sleep(backoff_delays[respawn_attempts]).await;
                 respawn_attempts += 1;
             } else {
-                error!("Upstream '{}' exceeded maximum restart attempts", self.config.name);
+                error!(
+                    "Upstream '{}' exceeded maximum restart attempts",
+                    self.config.name
+                );
                 break;
             }
         }
@@ -351,7 +372,9 @@ impl SupplyChainFirewall {
         let mut pinned = self.pinned_contracts.write();
         if let Some(existing) = pinned.get(&contract_key) {
             if existing.description_hash != desc_hash || existing.schema_hash != schema_hash {
-                self.quarantined_upstreams.write().insert(upstream_name.to_string());
+                self.quarantined_upstreams
+                    .write()
+                    .insert(upstream_name.to_string());
                 return Err(FastMcpError::SecurityViolation(format!(
                     "Supply-Chain Firewall: Upstream '{}' drifted tool '{}' definition. Quarantining upstream.",
                     upstream_name, tool.name
@@ -375,7 +398,9 @@ impl SupplyChainFirewall {
     }
 
     pub fn quarantine(&self, upstream_name: &str) {
-        self.quarantined_upstreams.write().insert(upstream_name.to_string());
+        self.quarantined_upstreams
+            .write()
+            .insert(upstream_name.to_string());
     }
 
     pub fn list_contracts(&self) -> Vec<PinnedToolContract> {

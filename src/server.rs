@@ -342,7 +342,7 @@ impl Server {
 
                         if let Some(vault) = &self.vault_lock {
                             match vault.check_or_wait(name, &arguments).await {
-                                Ok(true) => {},
+                                Ok(true) => {}
                                 Ok(false) => {
                                     let call_err = CallToolResult::error(format!(
                                         "Time-Locked Vault: Execution of '{}' was vetoed or timed out waiting for supervisor approval.",
@@ -380,9 +380,10 @@ impl Server {
                                 let args_clone = arguments.clone();
                                 let start_instant = std::time::Instant::now();
 
-                                let task = tokio::spawn(async move {
-                                    tool_clone.execute(args_clone).await
-                                });
+                                let task =
+                                    tokio::spawn(
+                                        async move { tool_clone.execute(args_clone).await },
+                                    );
 
                                 let execution_result = tokio::select! {
                                     _ = cancel_token.cancelled() => {
@@ -429,8 +430,9 @@ impl Server {
                                                         if let Err(e) =
                                                             guardrail.record_output(text)
                                                         {
-                                                            let call_err =
-                                                                CallToolResult::error(e.to_string());
+                                                            let call_err = CallToolResult::error(
+                                                                e.to_string(),
+                                                            );
                                                             return Some(JsonRpcResponse::success(
                                                                 req_id,
                                                                 json!(call_err),
@@ -454,7 +456,10 @@ impl Server {
                                             smac.record(name, &arguments, &json_res);
                                         }
                                         if let Some(receipt_book) = &self.receipt_book {
-                                            let schema_hash = crate::receipts::hash_canonical_json(&tool.input_schema()).unwrap_or_default();
+                                            let schema_hash = crate::receipts::hash_canonical_json(
+                                                &tool.input_schema(),
+                                            )
+                                            .unwrap_or_default();
                                             let _ = receipt_book.record_execution(
                                                 "session-1",
                                                 name,
@@ -475,7 +480,10 @@ impl Server {
                                     Err(e) => {
                                         let call_err = CallToolResult::error(e.to_string());
                                         if let Some(receipt_book) = &self.receipt_book {
-                                            let schema_hash = crate::receipts::hash_canonical_json(&tool.input_schema()).unwrap_or_default();
+                                            let schema_hash = crate::receipts::hash_canonical_json(
+                                                &tool.input_schema(),
+                                            )
+                                            .unwrap_or_default();
                                             let _ = receipt_book.record_execution(
                                                 "session-1",
                                                 name,

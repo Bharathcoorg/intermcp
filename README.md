@@ -137,6 +137,35 @@ Any environment variables containing sensitive keys (`API_KEY`, `SECRET`, `TOKEN
 ### 7. Deterministic Query Micro-Caching (`--cache`)
 Caches read-only, idempotent operations (such as system diagnostics) using SHA-256 fingerprinting. Read/write filesystem tools remain uncached to guarantee fresh data.
 
+### 8. ADR 001: Signed Execution Receipts & Provenance (`--receipts`)
+Generates tamper-evident cryptographic receipts for every tool execution using RFC 8785 JSON Canonicalization Scheme (JCS) and HMAC-SHA256 digital signatures. Authenticate offline with:
+```bash
+intermcp verify-receipts audit.receipts.json --key secret-key
+```
+
+### 9. ADR 002: Upstream Supply-Chain Firewall & Drift Quarantine
+When proxying external community MCP servers, InterMCP computes SHA-256 fingerprints of tool descriptions and input schemas. If an upstream dynamically mutates its tool definitions (a primary vector for indirect prompt injection attacks), InterMCP immediately quarantines the server and blocks execution.
+
+### 10. Time-Locked Approval Vault (`--time-lock`)
+Requires human supervisor authorization before executing high-risk tools (e.g. `system_run_command`, `git_push`). Pending requests are held in memory with TTL expiry and can be approved/rejected via the live web dashboard or API:
+```bash
+intermcp serve --time-lock system_run_command
+```
+
+### 11. Session Flight Recorder & Replay (`--record`, `intermcp replay`)
+Records all JSON-RPC frames into a deterministic `.imcp` flight trace for debugging, regression testing, and CI re-execution:
+```bash
+intermcp serve --record session.imcp
+intermcp replay session.imcp
+```
+
+### 12. Full MCP 2024-11-05 SSE Transport (`--http`)
+Run InterMCP as a high-performance remote HTTP/SSE gateway with Bearer authentication and CORS support:
+```bash
+intermcp serve --http 127.0.0.1:8080 --token my-secret-token
+```
+Supports official `GET /sse` endpoint discovery and `POST /message?sessionId=...` bidirectional streaming.
+
 ---
 
 ## 🌐 Protocol Support

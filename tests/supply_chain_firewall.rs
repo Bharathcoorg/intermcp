@@ -17,14 +17,18 @@ fn test_supply_chain_firewall_pins_contracts() {
         }),
     };
 
-    let contract = firewall.verify_and_pin("upstream_alpha", &tool).expect("Initial pinning should succeed");
+    let contract = firewall
+        .verify_and_pin("upstream_alpha", &tool)
+        .expect("Initial pinning should succeed");
     assert_eq!(contract.tool_name, "test_tool");
     assert_eq!(contract.upstream_name, "upstream_alpha");
     assert!(!contract.description_hash.is_empty());
     assert!(!contract.schema_hash.is_empty());
 
     // Re-verifying identical tool should succeed
-    let contract2 = firewall.verify_and_pin("upstream_alpha", &tool).expect("Re-verifying identical tool must succeed");
+    let contract2 = firewall
+        .verify_and_pin("upstream_alpha", &tool)
+        .expect("Re-verifying identical tool must succeed");
     assert_eq!(contract, contract2);
     assert!(!firewall.is_quarantined("upstream_alpha"));
 }
@@ -45,7 +49,9 @@ fn test_supply_chain_firewall_detects_prompt_injection_drift() {
     };
 
     // Initial pin
-    firewall.verify_and_pin("untrusted_upstream", &benign_tool).expect("Pinning should succeed");
+    firewall
+        .verify_and_pin("untrusted_upstream", &benign_tool)
+        .expect("Pinning should succeed");
 
     // Attacker modifies description dynamically to attempt prompt injection override
     let drifted_tool = ToolDefinition {
@@ -59,7 +65,9 @@ fn test_supply_chain_firewall_detects_prompt_injection_drift() {
         }),
     };
 
-    let err = firewall.verify_and_pin("untrusted_upstream", &drifted_tool).expect_err("Drifted description must be detected and rejected");
+    let err = firewall
+        .verify_and_pin("untrusted_upstream", &drifted_tool)
+        .expect_err("Drifted description must be detected and rejected");
     let err_msg = err.to_string();
     assert!(err_msg.contains("Supply-Chain Firewall"));
     assert!(err_msg.contains("drifted tool 'query_db' definition"));
@@ -68,7 +76,9 @@ fn test_supply_chain_firewall_detects_prompt_injection_drift() {
     assert!(firewall.is_quarantined("untrusted_upstream"));
 
     // Subsequent calls to this upstream must be blocked immediately
-    let err_quarantine = firewall.verify_and_pin("untrusted_upstream", &benign_tool).expect_err("Quarantined upstream must be blocked");
+    let err_quarantine = firewall
+        .verify_and_pin("untrusted_upstream", &benign_tool)
+        .expect_err("Quarantined upstream must be blocked");
     assert!(err_quarantine.to_string().contains("quarantined"));
 }
 
@@ -102,7 +112,11 @@ fn test_supply_chain_firewall_detects_schema_drift() {
         }),
     };
 
-    let err = firewall.verify_and_pin("git_upstream", &tool_v2).expect_err("Schema drift must be rejected");
-    assert!(err.to_string().contains("drifted tool 'git_push' definition"));
+    let err = firewall
+        .verify_and_pin("git_upstream", &tool_v2)
+        .expect_err("Schema drift must be rejected");
+    assert!(err
+        .to_string()
+        .contains("drifted tool 'git_push' definition"));
     assert!(firewall.is_quarantined("git_upstream"));
 }

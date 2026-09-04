@@ -7,14 +7,12 @@ fn test_hub_config_serialization_and_defaults() {
     env.insert("DEBUG".to_string(), "1".to_string());
 
     let config = HubConfig {
-        servers: vec![
-            UpstreamServerConfig {
-                name: "test-node".to_string(),
-                command: "node".to_string(),
-                args: vec!["server.js".to_string()],
-                env,
-            },
-        ],
+        servers: vec![UpstreamServerConfig {
+            name: "test-node".to_string(),
+            command: "node".to_string(),
+            args: vec!["server.js".to_string()],
+            env,
+        }],
     };
 
     let serialized = serde_json::to_string(&config).unwrap();

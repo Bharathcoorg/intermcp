@@ -79,7 +79,9 @@ async fn test_mcp_sse_handshake_and_message_dispatch() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Step 1: Connect via GET /sse
-    let mut sse_stream = TcpStream::connect(addr).await.expect("Failed to connect to SSE");
+    let mut sse_stream = TcpStream::connect(addr)
+        .await
+        .expect("Failed to connect to SSE");
     let get_req = "GET /sse HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n";
     sse_stream.write_all(get_req.as_bytes()).await.unwrap();
 
@@ -100,7 +102,9 @@ async fn test_mcp_sse_handshake_and_message_dispatch() {
     let post_path = endpoint_line.trim_start_matches("data: ").trim();
 
     // Step 2: In a separate client connection, send POST /message?sessionId=...
-    let mut post_stream = TcpStream::connect(addr).await.expect("Failed to connect for POST");
+    let mut post_stream = TcpStream::connect(addr)
+        .await
+        .expect("Failed to connect for POST");
     let json_rpc = "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\",\"params\":{}}";
     let post_req = format!(
         "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -113,11 +117,22 @@ async fn test_mcp_sse_handshake_and_message_dispatch() {
     let mut post_buf = [0u8; 1024];
     let pn = post_stream.read(&mut post_buf).await.unwrap();
     let post_resp = String::from_utf8_lossy(&post_buf[..pn]);
-    assert!(post_resp.contains("202 Accepted"), "POST /message must return 202 Accepted, got: {}", post_resp);
+    assert!(
+        post_resp.contains("202 Accepted"),
+        "POST /message must return 202 Accepted, got: {}",
+        post_resp
+    );
 
     // Step 3: Verify the SSE stream receives event: message with the JSON-RPC response!
     let sn = sse_stream.read(&mut buf).await.unwrap();
     let sse_event = String::from_utf8_lossy(&buf[..sn]);
-    assert!(sse_event.contains("event: message"), "SSE must receive event: message, got: {}", sse_event);
-    assert!(sse_event.contains("\"id\":42") || sse_event.contains("\"id\": 42"), "SSE payload must contain JSON-RPC response");
+    assert!(
+        sse_event.contains("event: message"),
+        "SSE must receive event: message, got: {}",
+        sse_event
+    );
+    assert!(
+        sse_event.contains("\"id\":42") || sse_event.contains("\"id\": 42"),
+        "SSE payload must contain JSON-RPC response"
+    );
 }

@@ -89,8 +89,8 @@ impl SessionReplayer {
                 continue;
             }
 
-            let frame: SessionFrame = serde_json::from_str(trimmed)
-                .map_err(FastMcpError::Serialization)?;
+            let frame: SessionFrame =
+                serde_json::from_str(trimmed).map_err(FastMcpError::Serialization)?;
 
             match frame.dir {
                 FrameDirection::Inbound => {

@@ -25,7 +25,10 @@ async fn test_protected_tool_approval() {
         }
     });
 
-    let res = vault.check_or_wait("system_run_command", &json!({"command": "git push"})).await.unwrap();
+    let res = vault
+        .check_or_wait("system_run_command", &json!({"command": "git push"}))
+        .await
+        .unwrap();
     assert!(res);
 }
 
@@ -64,14 +67,22 @@ async fn test_server_with_time_locked_vault_integration() {
         "id": 1,
         "method": "tools/call",
         "params": { "name": "protected_call", "arguments": {} }
-    }).to_string();
+    })
+    .to_string();
 
     // No approval sent, will timeout after 1 second
     let resp_str = server.handle_raw_message(&call_req).await.unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
     let res = resp.result.unwrap();
-    let is_error = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_error = res
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(is_error);
-    let text = res.get("content").unwrap().as_array().unwrap()[0].get("text").unwrap().as_str().unwrap();
+    let text = res.get("content").unwrap().as_array().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
     assert!(text.contains("Time-Locked Vault"));
 }

@@ -42,7 +42,10 @@ pub mod windows {
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
 
     extern "system" {
-        fn CreateJobObjectW(lp_job_attributes: *mut std::ffi::c_void, lp_name: *const u16) -> RawHandle;
+        fn CreateJobObjectW(
+            lp_job_attributes: *mut std::ffi::c_void,
+            lp_name: *const u16,
+        ) -> RawHandle;
         fn SetInformationJobObject(
             h_job: RawHandle,
             job_object_info_class: i32,

@@ -20,18 +20,26 @@ pub mod tool;
 pub mod tools;
 pub mod vault_lock;
 
-pub use auto_config::{configure_all_ides, configure_all_ides as auto_configure_all_ides, SetupResult};
+pub use auto_config::{
+    configure_all_ides, configure_all_ides as auto_configure_all_ides, SetupResult,
+};
 pub use cache::ToolCache;
 pub use config::PolicyConfig;
 pub use discovery::create_tool_discovery_tool;
 pub use error::FastMcpError;
 pub use guardrails::GuardrailPolicy;
 pub use http_server::{run_http_server, HttpServerConfig};
-pub use hub::{load_hub_tools, load_hub_tools_with_firewall, HubConfig, PinnedToolContract, SupplyChainFirewall, UpstreamServerConfig};
+pub use hub::{
+    load_hub_tools, load_hub_tools_with_firewall, HubConfig, PinnedToolContract,
+    SupplyChainFirewall, UpstreamServerConfig,
+};
 pub use manifest::{load_manifest_tools, DeclarativeTool, ManifestConfig, ManifestTool};
 pub use prompt::{Prompt, SimplePrompt};
 pub use protocol::{CallToolResult, ContentItem, JsonRpcRequest, JsonRpcResponse, ToolDefinition};
-pub use receipts::{canonicalize_json, hash_canonical_json, verify_receipt_chain_file, ExecutionReceipt, ReceiptBook, ReceiptStatus, SignedReceiptRecord, VerificationSummary};
+pub use receipts::{
+    canonicalize_json, hash_canonical_json, verify_receipt_chain_file, ExecutionReceipt,
+    ReceiptBook, ReceiptStatus, SignedReceiptRecord, VerificationSummary,
+};
 pub use record::{FrameDirection, ReplaySummary, SessionFrame, SessionRecorder, SessionReplayer};
 pub use resource::{Resource, SimpleResource};
 pub use sandbox::SandboxPolicy;

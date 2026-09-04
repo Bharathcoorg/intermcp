@@ -43,7 +43,9 @@ pub fn create_fs_read_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
 
                 if let Ok(sym_meta) = safe_path.symlink_metadata() {
                     if sym_meta.file_type().is_symlink() {
-                        return Ok(CallToolResult::error("Security error: Symlink access is prohibited".to_string()));
+                        return Ok(CallToolResult::error(
+                            "Security error: Symlink access is prohibited".to_string(),
+                        ));
                     }
                 }
 

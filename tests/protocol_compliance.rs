@@ -11,7 +11,8 @@ async fn test_jsonrpc_2_0_validation() {
         "jsonrpc": "1.0",
         "id": 1,
         "method": "ping"
-    }).to_string();
+    })
+    .to_string();
 
     let resp_str = server.handle_raw_message(&req).await.unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
@@ -26,7 +27,8 @@ async fn test_batch_jsonrpc_requests() {
         { "jsonrpc": "2.0", "id": 1, "method": "ping" },
         { "jsonrpc": "2.0", "id": 2, "method": "ping" },
         { "jsonrpc": "2.0", "id": 3, "method": "ping" }
-    ]).to_string();
+    ])
+    .to_string();
 
     let resp_str = server.handle_raw_message(&batch_req).await.unwrap();
     let responses: Vec<JsonRpcResponse> = serde_json::from_str(&resp_str).unwrap();
@@ -43,7 +45,8 @@ async fn test_notifications_initialized() {
     let notif = json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
-    }).to_string();
+    })
+    .to_string();
 
     let resp = server.handle_raw_message(&notif).await;
     assert!(resp.is_none(), "Notifications must not produce a response");
@@ -58,7 +61,8 @@ async fn test_logging_set_level() {
         "id": 42,
         "method": "logging/setLevel",
         "params": { "level": "debug" }
-    }).to_string();
+    })
+    .to_string();
 
     let resp_str = server.handle_raw_message(&req).await.unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
@@ -84,11 +88,18 @@ async fn test_completion_complete() {
             "ref": { "type": "ref/prompt", "name": "search" },
             "argument": { "name": "query", "value": "search" }
         }
-    }).to_string();
+    })
+    .to_string();
 
     let resp_str = server.handle_raw_message(&req).await.unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
     let res = resp.result.unwrap();
-    let completions = res.get("completion").unwrap().get("values").unwrap().as_array().unwrap();
+    let completions = res
+        .get("completion")
+        .unwrap()
+        .get("values")
+        .unwrap()
+        .as_array()
+        .unwrap();
     assert!(completions.contains(&Value::String("search_records".to_string())));
 }

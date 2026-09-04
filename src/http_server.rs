@@ -213,7 +213,8 @@ pub async fn run_http_server(
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                 } else if method == "GET" && path == "/health" {
-                    let status = "{\"status\":\"healthy\",\"server\":\"intermcp\",\"version\":\"0.1.0\"}";
+                    let status =
+                        "{\"status\":\"healthy\",\"server\":\"intermcp\",\"version\":\"0.1.0\"}";
                     let response = format!(
                         "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         cors_header,
@@ -236,7 +237,10 @@ pub async fn run_http_server(
                     }
 
                     // Emit official MCP 2024-11-05 endpoint event
-                    let endpoint_event = format!("event: endpoint\ndata: /message?sessionId={}\n\n", session_id);
+                    let endpoint_event = format!(
+                        "event: endpoint\ndata: /message?sessionId={}\n\n",
+                        session_id
+                    );
                     if socket.write_all(endpoint_event.as_bytes()).await.is_err() {
                         get_sse_sessions().write().remove(&session_id);
                         return;
@@ -268,7 +272,9 @@ pub async fn run_http_server(
                         }
                     }
                     get_sse_sessions().write().remove(&session_id);
-                } else if method == "POST" && (path == "/message" || raw_path.starts_with("/message?")) {
+                } else if method == "POST"
+                    && (path == "/message" || raw_path.starts_with("/message?"))
+                {
                     let body_slice = &buffer[header_end..header_end + content_length];
                     let body_str = String::from_utf8_lossy(body_slice);
 
@@ -337,7 +343,9 @@ pub async fn run_http_server(
                         json_str
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
-                } else if (method == "POST" || method == "GET") && (path.starts_with("/api/approve/") || path.starts_with("/approve/")) {
+                } else if (method == "POST" || method == "GET")
+                    && (path.starts_with("/api/approve/") || path.starts_with("/approve/"))
+                {
                     let id = path.rsplit('/').next().unwrap_or("");
                     let approved = server_ref
                         .vault_lock()
@@ -355,7 +363,9 @@ pub async fn run_http_server(
                         status
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
-                } else if (method == "POST" || method == "GET") && (path.starts_with("/api/reject/") || path.starts_with("/reject/")) {
+                } else if (method == "POST" || method == "GET")
+                    && (path.starts_with("/api/reject/") || path.starts_with("/reject/"))
+                {
                     let id = path.rsplit('/').next().unwrap_or("");
                     let rejected = server_ref
                         .vault_lock()

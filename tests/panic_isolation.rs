@@ -27,7 +27,8 @@ async fn test_tool_panic_isolation() {
             "name": "crash_tool",
             "arguments": {}
         }
-    }).to_string();
+    })
+    .to_string();
 
     let resp_str = server.handle_raw_message(&call_req).await.unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(&resp_str).unwrap();
@@ -42,7 +43,8 @@ async fn test_tool_panic_isolation() {
         "jsonrpc": "2.0",
         "id": 1000,
         "method": "ping"
-    }).to_string();
+    })
+    .to_string();
 
     let ping_resp_str = server.handle_raw_message(&ping_req).await.unwrap();
     let ping_resp: JsonRpcResponse = serde_json::from_str(&ping_resp_str).unwrap();

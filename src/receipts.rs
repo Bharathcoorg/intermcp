@@ -5,11 +5,11 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::error::FastMcpError;
 
@@ -18,7 +18,11 @@ use crate::error::FastMcpError;
 pub fn canonicalize_json(value: &Value) -> Result<Vec<u8>, FastMcpError> {
     match value {
         Value::Null => Ok(b"null".to_vec()),
-        Value::Bool(b) => Ok(if *b { b"true".to_vec() } else { b"false".to_vec() }),
+        Value::Bool(b) => Ok(if *b {
+            b"true".to_vec()
+        } else {
+            b"false".to_vec()
+        }),
         Value::Number(n) => Ok(n.to_string().into_bytes()),
         Value::String(s) => serde_json::to_vec(s).map_err(FastMcpError::Serialization),
         Value::Array(arr) => {
@@ -42,7 +46,9 @@ pub fn canonicalize_json(value: &Value) -> Result<Vec<u8>, FastMcpError> {
                 if i > 0 {
                     out.push(b',');
                 }
-                out.extend_from_slice(&serde_json::to_vec(key).map_err(FastMcpError::Serialization)?);
+                out.extend_from_slice(
+                    &serde_json::to_vec(key).map_err(FastMcpError::Serialization)?,
+                );
                 out.push(b':');
                 out.extend_from_slice(&canonicalize_json(&map[*key])?);
             }
@@ -134,7 +140,11 @@ impl ExecutionReceipt {
     }
 
     /// Sign this receipt with a secret key and produce a `SignedReceiptRecord`.
-    pub fn sign(&self, secret_key: &[u8], signer_id: &str) -> Result<SignedReceiptRecord, FastMcpError> {
+    pub fn sign(
+        &self,
+        secret_key: &[u8],
+        signer_id: &str,
+    ) -> Result<SignedReceiptRecord, FastMcpError> {
         let receipt_hash = self.compute_hash()?;
         let signature_hex = hmac_sha256(secret_key, receipt_hash.as_bytes());
 
@@ -157,7 +167,11 @@ impl SignedReceiptRecord {
 
         if let Some(key) = secret_key {
             let expected_sig = hmac_sha256(key, self.receipt_hash.as_bytes());
-            let matches: bool = self.signature_hex.as_bytes().ct_eq(expected_sig.as_bytes()).into();
+            let matches: bool = self
+                .signature_hex
+                .as_bytes()
+                .ct_eq(expected_sig.as_bytes())
+                .into();
             if !matches {
                 return Ok(false);
             }
@@ -182,13 +196,20 @@ struct ReceiptBookInner {
 }
 
 impl ReceiptBook {
-    pub fn new(path: impl Into<PathBuf>, secret_key: &[u8], signer_id: &str) -> Result<Self, FastMcpError> {
+    pub fn new(
+        path: impl Into<PathBuf>,
+        secret_key: &[u8],
+        signer_id: &str,
+    ) -> Result<Self, FastMcpError> {
         let file_path = path.into();
         let (sequence, prev_hash) = if file_path.exists() {
             let verified = verify_receipt_chain_file(&file_path, Some(secret_key))?;
             (verified.count as u64 + 1, verified.last_hash)
         } else {
-            (1, "0000000000000000000000000000000000000000000000000000000000000000".to_string())
+            (
+                1,
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            )
         };
 
         Ok(Self {
@@ -264,11 +285,15 @@ pub struct VerificationSummary {
 }
 
 /// Verify an entire chain of signed receipts from a file.
-pub fn verify_receipt_chain_file(path: &Path, secret_key: Option<&[u8]>) -> Result<VerificationSummary, FastMcpError> {
+pub fn verify_receipt_chain_file(
+    path: &Path,
+    secret_key: Option<&[u8]>,
+) -> Result<VerificationSummary, FastMcpError> {
     if !path.exists() {
         return Ok(VerificationSummary {
             count: 0,
-            last_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            last_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
         });
     }
 
@@ -276,7 +301,8 @@ pub fn verify_receipt_chain_file(path: &Path, secret_key: Option<&[u8]>) -> Resu
     let reader = BufReader::new(file);
 
     let mut expected_seq = 1u64;
-    let mut expected_prev_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let mut expected_prev_hash =
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
     let mut total_verified = 0;
 
     for (line_idx, line) in reader.lines().enumerate() {
@@ -286,27 +312,37 @@ pub fn verify_receipt_chain_file(path: &Path, secret_key: Option<&[u8]>) -> Resu
             continue;
         }
 
-        let record: SignedReceiptRecord = serde_json::from_str(trimmed)
-            .map_err(|e| FastMcpError::InvalidRequest(format!("Line {}: Corrupted receipt JSON: {}", line_idx + 1, e)))?;
+        let record: SignedReceiptRecord = serde_json::from_str(trimmed).map_err(|e| {
+            FastMcpError::InvalidRequest(format!(
+                "Line {}: Corrupted receipt JSON: {}",
+                line_idx + 1,
+                e
+            ))
+        })?;
 
         if record.receipt.sequence != expected_seq {
             return Err(FastMcpError::SecurityViolation(format!(
                 "Receipt sequence broken at line {}: expected #{}, found #{}",
-                line_idx + 1, expected_seq, record.receipt.sequence
+                line_idx + 1,
+                expected_seq,
+                record.receipt.sequence
             )));
         }
 
         if record.receipt.prev_receipt_hash != expected_prev_hash {
             return Err(FastMcpError::SecurityViolation(format!(
                 "Receipt hash chain broken at line {}: expected prev_hash '{}', found '{}'",
-                line_idx + 1, expected_prev_hash, record.receipt.prev_receipt_hash
+                line_idx + 1,
+                expected_prev_hash,
+                record.receipt.prev_receipt_hash
             )));
         }
 
         if !record.verify(secret_key)? {
             return Err(FastMcpError::SecurityViolation(format!(
                 "Receipt cryptographic signature verification failed at line {} (sequence #{})",
-                line_idx + 1, record.receipt.sequence
+                line_idx + 1,
+                record.receipt.sequence
             )));
         }
 

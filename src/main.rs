@@ -261,16 +261,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(policy) = &loaded_policy {
                 if let Some(bytes) = policy.cache_max_bytes {
-                    server = server.with_cache_bytes(Duration::from_secs(cache.unwrap_or(60)), bytes);
+                    server =
+                        server.with_cache_bytes(Duration::from_secs(cache.unwrap_or(60)), bytes);
                 }
             }
 
-            let rate_limit = loaded_policy.as_ref().and_then(|p| p.rate_limit).unwrap_or(60);
+            let rate_limit = loaded_policy
+                .as_ref()
+                .and_then(|p| p.rate_limit)
+                .unwrap_or(60);
             if guardrails || loaded_policy.as_ref().and_then(|p| p.rate_limit).is_some() {
                 server = server.with_guardrails(rate_limit, 5);
             }
 
-            let token_limit = budget.or_else(|| loaded_policy.as_ref().and_then(|p| p.token_budget));
+            let token_limit =
+                budget.or_else(|| loaded_policy.as_ref().and_then(|p| p.token_budget));
             if let Some(limit) = token_limit {
                 server = server.with_token_budget(limit);
             }
@@ -289,21 +294,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Some(rec_path) = record {
-                server = server.with_recorder(intermcp::SessionRecorder::new(std::path::Path::new(&rec_path))?);
+                server = server.with_recorder(intermcp::SessionRecorder::new(
+                    std::path::Path::new(&rec_path),
+                )?);
             }
 
             if let Some(audit_path) = audit_log {
-                server = server.with_smac(intermcp::SmacLogger::new(std::path::Path::new(&audit_path))?);
+                server = server.with_smac(intermcp::SmacLogger::new(std::path::Path::new(
+                    &audit_path,
+                ))?);
             }
 
             if let Some(tools_str) = time_lock {
-                let tools: Vec<String> = tools_str.split(',').map(|s| s.trim().to_string()).collect();
+                let tools: Vec<String> =
+                    tools_str.split(',').map(|s| s.trim().to_string()).collect();
                 server = server.with_time_locked_vault(intermcp::TimeLockedVault::new(tools, 20));
             }
 
             if let Some(r_path) = receipts {
-                let key_bytes = signing_key.as_deref().unwrap_or("intermcp-default-secret-key").as_bytes();
-                server = server.with_receipt_book(intermcp::ReceiptBook::new(std::path::Path::new(&r_path), key_bytes, "intermcp-node")?);
+                let key_bytes = signing_key
+                    .as_deref()
+                    .unwrap_or("intermcp-default-secret-key")
+                    .as_bytes();
+                server = server.with_receipt_book(intermcp::ReceiptBook::new(
+                    std::path::Path::new(&r_path),
+                    key_bytes,
+                    "intermcp-node",
+                )?);
             }
 
             if smart_discovery {
@@ -330,7 +347,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Replay { trace } => {
             println!("\n▶️ Replaying session flight trace from '{}'...", trace);
             let server = intermcp::create_default_server();
-            let summary = intermcp::SessionReplayer::replay(std::path::Path::new(&trace), &server).await?;
+            let summary =
+                intermcp::SessionReplayer::replay(std::path::Path::new(&trace), &server).await?;
             println!("📊 Replay complete:");
             println!("   • Total calls processed: {}", summary.total_calls);
             println!("   • Matched responses: {}", summary.matched);
@@ -345,10 +363,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::VerifyAudit { log } => {
-            println!("\n🔐 Cryptographically verifying SMAC audit chain '{}'...", log);
+            println!(
+                "\n🔐 Cryptographically verifying SMAC audit chain '{}'...",
+                log
+            );
             match intermcp::verify_smac_log(std::path::Path::new(&log)) {
                 Ok(count) => {
-                    println!("✅ SMAC Audit Chain verified! {} tamper-evident records authenticated.", count);
+                    println!(
+                        "✅ SMAC Audit Chain verified! {} tamper-evident records authenticated.",
+                        count
+                    );
                 }
                 Err(e) => {
                     eprintln!("❌ Tampering or chain corruption detected: {}", e);
@@ -357,7 +381,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::VerifyReceipts { log, key } => {
-            println!("\n🔐 Cryptographically verifying ADR 001 signed receipts '{}'...", log);
+            println!(
+                "\n🔐 Cryptographically verifying ADR 001 signed receipts '{}'...",
+                log
+            );
             let key_bytes = key.as_deref().map(|k| k.as_bytes());
             match intermcp::verify_receipt_chain_file(std::path::Path::new(&log), key_bytes) {
                 Ok(summary) => {

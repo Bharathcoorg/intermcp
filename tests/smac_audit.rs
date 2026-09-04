@@ -10,9 +10,17 @@ fn test_smac_audit_chain_verification() {
 
     let logger = SmacLogger::new(&log_path).unwrap();
 
-    logger.record("fs_read_file", &json!({"path": "src/main.rs"}), &json!({"bytes": 1024}));
+    logger.record(
+        "fs_read_file",
+        &json!({"path": "src/main.rs"}),
+        &json!({"bytes": 1024}),
+    );
     logger.record("git_status", &json!({}), &json!({"clean": true}));
-    logger.record("system_run_command", &json!({"command": "cargo check"}), &json!({"exitCode": 0}));
+    logger.record(
+        "system_run_command",
+        &json!({"command": "cargo check"}),
+        &json!({"exitCode": 0}),
+    );
 
     let verified = verify_smac_log(&log_path);
     assert!(verified.is_ok());

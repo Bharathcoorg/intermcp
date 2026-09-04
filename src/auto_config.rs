@@ -78,8 +78,7 @@ fn atomic_write_json(parent: &Path, target: &Path, content: &str) -> Result<(), 
 
 fn safe_backup(config_path: &Path) -> Result<PathBuf, String> {
     let backup_path = config_path.with_extension("json.bak");
-    fs::copy(config_path, &backup_path)
-        .map_err(|e| format!("Failed to create backup: {}", e))?;
+    fs::copy(config_path, &backup_path).map_err(|e| format!("Failed to create backup: {}", e))?;
 
     let original_bytes = fs::read(config_path)
         .map_err(|e| format!("Failed to read original for verification: {}", e))?;
@@ -141,7 +140,10 @@ fn configure_mcp_json(ide_name: &str, config_path: &Path, binary_path: &str) -> 
                         name: ide_name.to_string(),
                         path: config_path.to_path_buf(),
                         success: false,
-                        message: format!("Refusing to overwrite unparseable configuration file: {}", e),
+                        message: format!(
+                            "Refusing to overwrite unparseable configuration file: {}",
+                            e
+                        ),
                     };
                 }
             },
@@ -257,7 +259,10 @@ fn configure_zed_json(config_path: &Path, binary_path: &str) -> SetupResult {
                         name: "Zed Editor".to_string(),
                         path: config_path.to_path_buf(),
                         success: false,
-                        message: format!("Refusing to overwrite unparseable configuration file: {}", e),
+                        message: format!(
+                            "Refusing to overwrite unparseable configuration file: {}",
+                            e
+                        ),
                     };
                 }
             },
@@ -331,7 +336,9 @@ fn get_claude_desktop_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\".into());
-        PathBuf::from(appdata).join("Claude").join("claude_desktop_config.json")
+        PathBuf::from(appdata)
+            .join("Claude")
+            .join("claude_desktop_config.json")
     }
     #[cfg(target_os = "macos")]
     {
@@ -369,12 +376,18 @@ fn get_windsurf_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
-        PathBuf::from(userprofile).join(".codeium").join("windsurf").join("mcp_config.json")
+        PathBuf::from(userprofile)
+            .join(".codeium")
+            .join("windsurf")
+            .join("mcp_config.json")
     }
     #[cfg(not(target_os = "windows"))]
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        PathBuf::from(home).join(".codeium").join("windsurf").join("mcp_config.json")
+        PathBuf::from(home)
+            .join(".codeium")
+            .join("windsurf")
+            .join("mcp_config.json")
     }
 }
 
@@ -474,7 +487,10 @@ fn get_zed_path() -> PathBuf {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        PathBuf::from(home).join(".config").join("zed").join("settings.json")
+        PathBuf::from(home)
+            .join(".config")
+            .join("zed")
+            .join("settings.json")
     }
 }
 
@@ -482,7 +498,9 @@ fn get_continue_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
-        PathBuf::from(userprofile).join(".continue").join("config.json")
+        PathBuf::from(userprofile)
+            .join(".continue")
+            .join("config.json")
     }
     #[cfg(not(target_os = "windows"))]
     {
