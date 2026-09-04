@@ -244,21 +244,29 @@ impl SandboxPolicy {
             ));
         }
 
-        for comp in requested.components() {
-            if let Component::Normal(os_str) = comp {
-                let s = os_str.to_string_lossy();
-                if Self::is_reserved_device_name(&s) {
-                    return Err(FastMcpError::ToolExecution(format!(
-                        "Access denied: '{}' is a reserved NTFS device name.",
-                        s
-                    )));
-                }
-                if Self::is_windows_short_name(&s) {
-                    return Err(FastMcpError::ToolExecution(format!(
-                        "Access denied: 8.3 short name alias '{}' is prohibited.",
-                        s
-                    )));
-                }
+        #[cfg(not(windows))]
+        if raw_str.len() >= 2
+            && raw_str.as_bytes()[1] == b':'
+            && raw_str.as_bytes()[0].is_ascii_alphabetic()
+        {
+            return Err(FastMcpError::ToolExecution(format!(
+                "Access denied: Windows drive path '{}' is outside Unix root.",
+                raw_str
+            )));
+        }
+
+        for segment in raw_str.split(['/', '\\']) {
+            if Self::is_reserved_device_name(segment) {
+                return Err(FastMcpError::ToolExecution(format!(
+                    "Access denied: '{}' is a reserved NTFS device name.",
+                    segment
+                )));
+            }
+            if Self::is_windows_short_name(segment) {
+                return Err(FastMcpError::ToolExecution(format!(
+                    "Access denied: 8.3 short name alias '{}' is prohibited.",
+                    segment
+                )));
             }
         }
 
@@ -269,19 +277,14 @@ impl SandboxPolicy {
             )));
         }
 
-        let abs_path = if requested.is_absolute() {
-            requested.to_path_buf()
-        } else {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            cwd.join(requested)
-        };
-
         let mut normalized = PathBuf::new();
-        for comp in abs_path.components() {
+        for comp in requested.components() {
             match comp {
                 Component::CurDir => {}
                 Component::ParentDir => {
-                    normalized.pop();
+                    if !normalized.pop() {
+                        normalized.push("..");
+                    }
                 }
                 c => normalized.push(c.as_os_str()),
             }
