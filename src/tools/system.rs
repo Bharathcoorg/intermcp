@@ -106,11 +106,11 @@ pub fn create_shell_exec_tool_with_allowlist(extra_allowed: Vec<String>) -> Box<
                         )))
                     }
                 };
-                let first_token = tokens.first().map(|s| s.to_lowercase()).unwrap_or_default();
-
                 #[cfg(target_os = "windows")]
-                let is_builtin =
-                    matches!(first_token.as_str(), "echo" | "dir" | "type" | "cls" | "cd");
+                let is_builtin = tokens
+                    .first()
+                    .map(|s| matches!(s.to_lowercase().as_str(), "echo" | "dir" | "type" | "cls" | "cd"))
+                    .unwrap_or(false);
                 #[cfg(not(target_os = "windows"))]
                 let is_builtin = false;
 
