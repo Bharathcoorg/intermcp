@@ -1,0 +1,20 @@
+{
+  "name": "intermcp/client",
+  "description": "Ultra-Fast, Safe Model Context Protocol (MCP) PHP Client for InterMCP Trust Runtime",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Bharath B R",
+      "email": "bharathcoorg7@gmail.com"
+    }
+  ],
+  "require": {
+    "php": ">=8.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "InterMcp\\": "src/"
+    }
+  }
+}

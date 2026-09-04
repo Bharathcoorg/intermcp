@@ -21,7 +21,7 @@
 [![Memory](https://img.shields.io/badge/RAM-<3.8MB-purple.svg?style=for-the-badge)](https://github.com/Bharathcoorg/intermcp)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-green.svg?style=for-the-badge)](CONTRIBUTING.md)
 
-[Quickstart](#-1-click-installation--setup) • [Benchmarks](#-benchmarks) • [Key Features](#-key-features) • [Protocol Support](#-protocol-support) • [Rust SDK](#-rust-sdk-usage) • [TypeScript SDK](#-typescript--node-sdk) • [Python SDK](#-python-client--agent-usage) • [Guides](#-developer-guides) • [Security](#-security--vulnerability-reporting)
+[Quickstart](#-1-click-installation--setup) • [Benchmarks](#-benchmarks) • [Key Features](#-key-features) • [Rust](#-rust-sdk-usage) • [TypeScript](#-typescript--node-sdk) • [Python](#-python-client--agent-usage) • [Go](#-go-client-usage) • [PHP](#-php-client-usage) • [Guides](#-developer-guides) • [Security](#-security--vulnerability-reporting)
 
 ---
 
@@ -340,6 +340,56 @@ result = json.loads(proc.stdout.readline())
 print("Result:", result["result"])
 ```
 *See [`examples/python_client.py`](examples/python_client.py) for a complete, zero-dependency Python client class.*
+
+---
+
+## 🐹 Go Client Usage
+
+For cloud-native infrastructure, DevOps pipelines, and Go microservices:
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "github.com/Bharathcoorg/intermcp/go/intermcp"
+)
+
+func main() {
+    client := intermcp.NewClient("") // Discovers local binary or PATH
+    if err := client.Start(); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    result, err := client.CallTool("system_info", map[string]interface{}{})
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Result:", result.Content[0].Text)
+}
+```
+*See [`examples/go_client.go`](examples/go_client.go) and [`go/`](go/) for the complete Go module.*
+
+---
+
+## 🐘 PHP Client Usage
+
+For Laravel, Symfony, WordPress, and PHP web backends:
+
+```php
+use InterMcp\Client;
+
+$client = new Client();
+$client->start();
+
+$result = $client->callTool('system_info', []);
+echo json_encode($result, JSON_PRETTY_PRINT);
+
+$client->close();
+```
+*See [`examples/php_client.php`](examples/php_client.php) and [`php/`](php/) for the complete Composer package.*
 
 ---
 
