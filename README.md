@@ -21,7 +21,7 @@
 [![Memory](https://img.shields.io/badge/RAM-<3.8MB-purple.svg?style=for-the-badge)](https://github.com/Bharathcoorg/intermcp)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-green.svg?style=for-the-badge)](CONTRIBUTING.md)
 
-[Quickstart](#-quickstart) • [Benchmarks](#-benchmarks) • [Key Features](#-key-features) • [Protocol Support](#-protocol-support) • [Guides](#-developer-guides) • [Rust SDK](#-rust-sdk-usage) • [TypeScript SDK](#-typescript--node-sdk) • [Security](#-security--vulnerability-reporting) • [License](#-license)
+[Quickstart](#-1-click-installation--setup) • [Benchmarks](#-benchmarks) • [Key Features](#-key-features) • [Protocol Support](#-protocol-support) • [Rust SDK](#-rust-sdk-usage) • [TypeScript SDK](#-typescript--node-sdk) • [Python SDK](#-python-client--agent-usage) • [Guides](#-developer-guides) • [Security](#-security--vulnerability-reporting)
 
 ---
 
@@ -281,6 +281,40 @@ async function main() {
 
 main();
 ```
+
+---
+
+## 🐍 Python Client & Agent Usage
+
+Any Python AI agent framework (LangChain, LlamaIndex, CrewAI, AutoGen) or script can interface with InterMCP directly using standard JSON-RPC 2024-11-05 over stdio or HTTP/SSE:
+
+```python
+import subprocess, json
+
+# 1. Spawn the native InterMCP engine
+proc = subprocess.Popen(
+    ["intermcp", "serve"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+)
+
+# 2. Handshake
+init_req = json.dumps({
+    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+    "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "agent", "version": "1.0"}}
+}) + "\n"
+proc.stdin.write(init_req); proc.stdin.flush()
+init_resp = json.loads(proc.stdout.readline())
+
+# 3. Call any tool with sub-microsecond latency
+call_req = json.dumps({
+    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+    "params": {"name": "system_info", "arguments": {}}
+}) + "\n"
+proc.stdin.write(call_req); proc.stdin.flush()
+result = json.loads(proc.stdout.readline())
+print("Result:", result["result"])
+```
+*See [`examples/python_client.py`](examples/python_client.py) for a complete, zero-dependency Python client class.*
 
 ---
 
