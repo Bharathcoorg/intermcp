@@ -269,7 +269,25 @@ impl SandboxPolicy {
             )));
         }
 
-        let mut curr = requested;
+        let abs_path = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            cwd.join(requested)
+        };
+
+        let mut normalized = PathBuf::new();
+        for comp in abs_path.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                c => normalized.push(c.as_os_str()),
+            }
+        }
+
+        let mut curr = normalized.as_path();
         let mut suffix_components = Vec::new();
 
         while !curr.exists() {
