@@ -286,7 +286,7 @@ impl UpstreamSupervisor {
             .envs(filtered_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
         crate::reaper::configure_child_isolation(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
@@ -311,6 +311,17 @@ impl UpstreamSupervisor {
             FastMcpError::ToolExecution("Failed to acquire upstream stdout".into())
         })?;
         let reader = BufReader::new(stdout).lines();
+
+        if let Some(err_pipe) = child.stderr.take() {
+            let upstream_name = config.name.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(err_pipe).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let sanitized = redact_for_log(&line);
+                    warn!(target: "intermcp::upstream", upstream = %upstream_name, "{}", sanitized);
+                }
+            });
+        }
 
         Ok((child, guard, stdin, reader))
     }

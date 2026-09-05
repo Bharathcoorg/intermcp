@@ -70,7 +70,7 @@ class Client
             'protocolVersion' => '2024-11-05',
             'clientInfo' => [
                 'name' => 'intermcp-php-sdk',
-                'version' => '0.2.0',
+                'version' => '0.2.1',
             ],
             'capabilities' => (object)[],
         ];

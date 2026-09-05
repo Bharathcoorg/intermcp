@@ -584,9 +584,7 @@ pub async fn run_http_server(
                         json_str
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
-                } else if (method == "POST" || method == "GET")
-                    && (path.starts_with("/api/approve/") || path.starts_with("/approve/"))
-                {
+                } else if path.starts_with("/api/approve/") || path.starts_with("/approve/") {
                     if let Some(expected_token) = &token_ref {
                         let authorized = if let Some(token) = &authorization_header {
                             token.as_bytes().ct_eq(expected_token.as_bytes()).into()
@@ -598,6 +596,15 @@ pub async fn run_http_server(
                             let _ = socket.write_all(resp.as_bytes()).await;
                             return;
                         }
+                    }
+
+                    if method != "POST" {
+                        let resp = format!(
+                            "HTTP/1.1 405 Method Not Allowed\r\n{}Allow: POST\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nMethod Not Allowed",
+                            cors_header
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
                     }
 
                     let id = path.rsplit('/').next().unwrap_or("");
@@ -617,9 +624,7 @@ pub async fn run_http_server(
                         status
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
-                } else if (method == "POST" || method == "GET")
-                    && (path.starts_with("/api/reject/") || path.starts_with("/reject/"))
-                {
+                } else if path.starts_with("/api/reject/") || path.starts_with("/reject/") {
                     if let Some(expected_token) = &token_ref {
                         let authorized = if let Some(token) = &authorization_header {
                             token.as_bytes().ct_eq(expected_token.as_bytes()).into()
@@ -631,6 +636,15 @@ pub async fn run_http_server(
                             let _ = socket.write_all(resp.as_bytes()).await;
                             return;
                         }
+                    }
+
+                    if method != "POST" {
+                        let resp = format!(
+                            "HTTP/1.1 405 Method Not Allowed\r\n{}Allow: POST\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nMethod Not Allowed",
+                            cors_header
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
                     }
 
                     let id = path.rsplit('/').next().unwrap_or("");

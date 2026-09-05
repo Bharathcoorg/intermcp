@@ -45,7 +45,7 @@ class InterMcpPythonClient:
         # MCP 2024-11-05 Handshake
         init_res = self.send_request("initialize", {
             "protocolVersion": "2024-11-05",
-            "clientInfo": {"name": "intermcp-python-client", "version": "0.2.0"},
+            "clientInfo": {"name": "intermcp-python-client", "version": "0.2.1"},
             "capabilities": {}
         })
         return init_res

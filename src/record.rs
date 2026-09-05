@@ -76,6 +76,14 @@ pub struct SessionReplayer;
 
 impl SessionReplayer {
     pub async fn replay(path: &Path, server: &Server) -> Result<ReplaySummary, FastMcpError> {
+        Self::replay_with_options(path, server, false).await
+    }
+
+    pub async fn replay_with_options(
+        path: &Path,
+        server: &Server,
+        allow_mutations: bool,
+    ) -> Result<ReplaySummary, FastMcpError> {
         let file = File::open(path).map_err(FastMcpError::Io)?;
         let reader = BufReader::new(file);
 
@@ -95,6 +103,16 @@ impl SessionReplayer {
             match frame.dir {
                 FrameDirection::Inbound => {
                     summary.total_calls += 1;
+                    if !allow_mutations && Self::is_mutating_request(&frame.payload) {
+                        let tool_name =
+                            Self::extract_tool_name(&frame.payload).unwrap_or("unknown");
+                        summary.mismatched += 1;
+                        summary.errors.push(format!(
+                            "Safety guard: call {} attempted mutating tool '{}' during replay; skipped execution (pass allow_mutations = true to execute)",
+                            summary.total_calls, tool_name
+                        ));
+                        continue;
+                    }
                     let raw_str = frame.payload.to_string();
                     let actual_resp_str = server.handle_raw_message(&raw_str).await;
 
@@ -141,5 +159,30 @@ impl SessionReplayer {
         }
 
         exp_clean == act_clean
+    }
+
+    fn extract_tool_name(payload: &Value) -> Option<&str> {
+        payload.get("params")?.get("name")?.as_str()
+    }
+
+    fn is_mutating_request(payload: &Value) -> bool {
+        if let Some(method) = payload.get("method").and_then(|m| m.as_str()) {
+            if method == "tools/call" {
+                if let Some(name) = Self::extract_tool_name(payload) {
+                    let mutating = ["system_run_command", "fs_write_file"];
+                    if mutating.iter().any(|&m| m.eq_ignore_ascii_case(name)) {
+                        return true;
+                    }
+                    if name.starts_with("git_")
+                        && name != "git_status"
+                        && name != "git_diff"
+                        && name != "git_log"
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }

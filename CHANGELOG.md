@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-05
+
+### Security & Hardening Pass
+- **CRITICAL**: Hardened shell linter against path-qualified executable bypasses (e.g. `./git`, `/bin/git`, `C:\Windows\git.exe`) and inline environment variable assignment prefixes (`FOO=bar git`) in `validate_shell_command` (`src/tools/system.rs`).
+- **CRITICAL**: Replaced predictable sequential `AtomicU64` approval IDs with 128-bit cryptographically secure random tokens generated via `rand::thread_rng()` (`src/vault_lock.rs`).
+- **CRITICAL**: Enforced `POST`-only requests on HTTP approval/rejection endpoints (`/api/approve/`, `/api/reject/`), returning RFC-compliant `405 Method Not Allowed` for `GET` requests to prevent 1-click CSRF attacks (`src/http_server.rs`).
+- **CRITICAL**: Piped upstream external MCP process `stderr` and sanitized output through `redact_for_log` in an asynchronous background reader task instead of raw `Stdio::inherit()` (`src/hub.rs`).
+- **CRITICAL**: Guarded session flight trace replay against executing destructive mutations (`fs_write_file`, `system_run_command`, mutating git actions) on the host machine; added `--allow-mutations` CLI flag to explicitly authorize mutations (`src/record.rs`, `src/main.rs`).
+- **MEDIUM**: Integrated `split_chained_commands` in `Server::handle_request` to ensure all chained subcommands (`&&`, `||`, `;`, `|`) are individually evaluated against `engine.check_shell` (`src/server.rs`).
+- **MEDIUM**: Propagated active `SandboxPolicy` into `search_dir` so custom sensitive file rules are strictly enforced during `fs_search_text` pattern scans (`src/tools/fs.rs`).
+- **MEDIUM**: Adopted RFC 8785 JSON Canonicalization Scheme (`canonicalize_json`) in `SmacLogger::hash_value` to guarantee deterministic hashes across varying key ordering (`src/smac.rs`).
+- **LOW**: Replaced panic-inducing `.unwrap()` on `config.as_object_mut()` with safe matches returning explicit error results in multi-IDE configurator (`src/auto_config.rs`).
+- **LOW**: Added `options.binaryPath` support and automatic debug binary detection to Node.js / TypeScript SDK client (`index.js`).
+- **DOCS**: Calibrated benchmark descriptions to specify ping routing latency and ops/sec; updated cryptographic terminology to "HMAC-authenticated receipts" (`README.md`).
+
 ## [0.2.0] - 2026-09-04
 
 ### Security & Hardening

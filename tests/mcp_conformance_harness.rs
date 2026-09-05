@@ -8,7 +8,7 @@ use intermcp::{SimplePrompt, SimpleResource};
 use serde_json::{json, Value};
 
 fn build_conformance_server() -> Server {
-    let mut server = Server::new("intermcp-conformance", "0.2.0");
+    let mut server = Server::new("intermcp-conformance", "0.2.1");
 
     // Register a test tool
     let echo_tool = SimpleTool::new(

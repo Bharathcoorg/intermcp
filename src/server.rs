@@ -587,25 +587,35 @@ impl Server {
                                     .get("command")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                let binary = cmd.split_whitespace().next().unwrap_or("");
-                                match engine.check_shell(binary, cmd) {
-                                    Ok(ShellPolicyDecision::Allow) => {}
-                                    Ok(ShellPolicyDecision::RequireSupervisorApproval(pattern)) => {
-                                        let call_err = CallToolResult::error(format!(
-                                            "Policy requires supervisor approval for pattern: {}",
-                                            pattern
-                                        ));
-                                        return Some(JsonRpcResponse::success(
-                                            req_id,
-                                            json!(call_err),
-                                        ));
+                                let subcmds = crate::tools::system::split_chained_commands(cmd);
+                                for sub in &subcmds {
+                                    let sub_trimmed = sub.trim();
+                                    if sub_trimmed.is_empty() {
+                                        continue;
                                     }
-                                    Err(e) => {
-                                        let call_err = CallToolResult::error(e.to_string());
-                                        return Some(JsonRpcResponse::success(
-                                            req_id,
-                                            json!(call_err),
-                                        ));
+                                    let binary =
+                                        sub_trimmed.split_whitespace().next().unwrap_or("");
+                                    match engine.check_shell(binary, sub_trimmed) {
+                                        Ok(ShellPolicyDecision::Allow) => {}
+                                        Ok(ShellPolicyDecision::RequireSupervisorApproval(
+                                            pattern,
+                                        )) => {
+                                            let call_err = CallToolResult::error(format!(
+                                                "Policy requires supervisor approval for pattern: {}",
+                                                pattern
+                                            ));
+                                            return Some(JsonRpcResponse::success(
+                                                req_id,
+                                                json!(call_err),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            let call_err = CallToolResult::error(e.to_string());
+                                            return Some(JsonRpcResponse::success(
+                                                req_id,
+                                                json!(call_err),
+                                            ));
+                                        }
                                     }
                                 }
                             }

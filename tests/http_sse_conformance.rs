@@ -208,6 +208,21 @@ async fn test_http_approve_reject_requires_auth_when_configured() {
             );
         }
     }
+
+    // Authenticated GET /api/approve/any-id must be rejected with 405 Method Not Allowed (CSRF protection)
+    if let Ok(mut stream) = TcpStream::connect(addr).await {
+        let req = "GET /api/approve/req-123 HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secure-token-vault\r\n\r\n";
+        let _ = stream.write_all(req.as_bytes()).await;
+        let mut buf = [0u8; 1024];
+        if let Ok(n) = stream.read(&mut buf).await {
+            let resp = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                resp.contains("405 Method Not Allowed"),
+                "Expected 405 Method Not Allowed for GET approve, got: {}",
+                resp
+            );
+        }
+    }
 }
 
 #[tokio::test]

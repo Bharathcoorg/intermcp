@@ -1,6 +1,6 @@
 {
   "name": "intermcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer Blockchain and open for all",
   "main": "index.js",
   "types": "index.d.ts",

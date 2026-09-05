@@ -266,6 +266,12 @@ pub fn validate_shell_command(cmd: &str, extra_allowed: &[String]) -> Result<(),
         }
 
         let raw_binary = &tokens[0];
+        if raw_binary.contains('=') {
+            return Err(
+                "Inline environment variable assignment in command prefix is prohibited".into(),
+            );
+        }
+
         let normalized_raw = raw_binary.to_lowercase().replace('\\', "/");
         if normalized_raw == "/usr/bin/env"
             || normalized_raw == "/usr/bin/env.exe"
@@ -277,6 +283,19 @@ pub fn validate_shell_command(cmd: &str, extra_allowed: &[String]) -> Result<(),
             return Err(
                 "Use of /usr/bin/env is prohibited to prevent PATH-driven binary escalation".into(),
             );
+        }
+
+        let has_path_separator = raw_binary.contains('/') || raw_binary.contains('\\');
+        if has_path_separator {
+            let is_explicitly_allowed_path = extra_allowed.iter().any(|b| {
+                b.eq_ignore_ascii_case(raw_binary) || b.eq_ignore_ascii_case(&normalized_raw)
+            });
+            if !is_explicitly_allowed_path {
+                return Err(format!(
+                    "Path-qualified executable '{}' is prohibited. Direct path execution is restricted to prevent binary hijacking.",
+                    raw_binary
+                ));
+            }
         }
 
         let normalized_binary = extract_binary_name(raw_binary);
@@ -411,7 +430,7 @@ pub fn validate_shell_command(cmd: &str, extra_allowed: &[String]) -> Result<(),
     Ok(())
 }
 
-fn split_chained_commands(cmd: &str) -> Vec<String> {
+pub(crate) fn split_chained_commands(cmd: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut in_single_quote = false;

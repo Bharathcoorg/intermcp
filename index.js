@@ -1,4 +1,4 @@
-/** InterMCP Node.js / TypeScript SDK v0.2.0 */
+/** InterMCP Node.js / TypeScript SDK v0.2.1 */
 const { spawn } = require("child_process");
 const readline = require("readline");
 const path = require("path");
@@ -6,6 +6,7 @@ const path = require("path");
 class InterMcpClient {
   constructor(options = {}) {
     this.plugin = options.plugin || null;
+    this.binaryPath = options.binaryPath || null;
     this.proc = null;
     this.rl = null;
     this.requestId = 0;
@@ -15,15 +16,26 @@ class InterMcpClient {
   async start() {
     const isWin = process.platform === "win32";
     const binaryName = isWin ? "intermcp.exe" : "intermcp";
-    const binPath = path.join(__dirname, "target", "release", binaryName);
+    const defaultRelease = path.join(__dirname, "target", "release", binaryName);
+    const defaultDebug = path.join(__dirname, "target", "debug", binaryName);
 
-    const cmd = require("fs").existsSync(binPath) ? binPath : "cargo";
+    let cmd = this.binaryPath;
+    if (!cmd) {
+      if (require("fs").existsSync(defaultRelease)) {
+        cmd = defaultRelease;
+      } else if (require("fs").existsSync(defaultDebug)) {
+        cmd = defaultDebug;
+      } else {
+        cmd = "cargo";
+      }
+    }
+
     const args = cmd === "cargo"
       ? ["run", "--manifest-path", path.join(__dirname, "Cargo.toml"), "--", "serve", ...(this.plugin ? ["--plugin", this.plugin] : [])]
       : ["serve", ...(this.plugin ? ["--plugin", this.plugin] : [])];
 
     this.proc = spawn(cmd, args, {
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     this.rl = readline.createInterface({
@@ -51,7 +63,7 @@ class InterMcpClient {
     // Handshake
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
-      clientInfo: { name: "intermcp-node-client", version: "0.2.0" },
+      clientInfo: { name: "intermcp-node-client", version: "0.2.1" },
     });
   }
 

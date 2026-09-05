@@ -235,7 +235,7 @@ pub fn create_fs_search_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                 };
 
                 let mut matches = Vec::new();
-                search_dir(&safe_dir, query, &mut matches, 0);
+                search_dir(&safe_dir, query, &mut matches, 0, &sb);
 
                 let result = json!({
                     "query": query,
@@ -251,7 +251,7 @@ pub fn create_fs_search_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
     ))
 }
 
-fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize) {
+fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize, sb: &SandboxPolicy) {
     if depth > 10 || matches.len() >= 50 {
         return;
     }
@@ -278,7 +278,7 @@ fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize) {
             }
 
             if p.is_dir() {
-                search_dir(&p, query, matches, depth + 1);
+                search_dir(&p, query, matches, depth + 1, sb);
             } else if p.is_file() {
                 // Skip binary files by common file extension
                 if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
@@ -313,7 +313,7 @@ fn search_dir(dir: &Path, query: &str, matches: &mut Vec<Value>, depth: usize) {
                 }
 
                 // Skip credential or secret files protected by Secret Shield
-                if SandboxPolicy::is_sensitive_path_default(&p) {
+                if sb.is_sensitive_path(&p) {
                     continue;
                 }
 

@@ -2,7 +2,6 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -30,7 +29,6 @@ pub struct TimeLockedVault {
     protected_tools: Vec<String>,
     window: Duration,
     pending: Arc<RwLock<HashMap<String, PendingEntry>>>,
-    counter: Arc<AtomicU64>,
 }
 
 impl TimeLockedVault {
@@ -39,7 +37,6 @@ impl TimeLockedVault {
             protected_tools,
             window: Duration::from_secs(window_secs),
             pending: Arc::new(RwLock::new(HashMap::new())),
-            counter: Arc::new(AtomicU64::new(1001)),
         }
     }
 
@@ -58,8 +55,9 @@ impl TimeLockedVault {
             return Ok(true);
         }
 
-        let num = self.counter.fetch_add(1, Ordering::SeqCst);
-        let id = format!("{:x}", num);
+        let mut token_bytes = [0u8; 16];
+        rand::Rng::fill(&mut rand::thread_rng(), &mut token_bytes);
+        let id: String = token_bytes.iter().map(|b| format!("{:02x}", b)).collect();
         let expires_at = Instant::now() + self.window;
 
         let (tx, rx) = oneshot::channel();

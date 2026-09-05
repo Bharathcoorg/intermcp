@@ -62,9 +62,10 @@ impl SmacLogger {
     }
 
     pub fn hash_value(v: &Value) -> String {
-        let canonical = serde_json::to_string(v).unwrap_or_default();
+        let canonical = crate::receipts::canonicalize_json(v)
+            .unwrap_or_else(|_| serde_json::to_string(v).unwrap_or_default().into_bytes());
         let mut hasher = Sha256::new();
-        hasher.update(canonical.as_bytes());
+        hasher.update(&canonical);
         format!("{:x}", hasher.finalize())
     }
 

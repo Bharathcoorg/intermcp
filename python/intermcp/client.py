@@ -46,7 +46,7 @@ class InterMcpClient:
 
         return self.request("initialize", {
             "protocolVersion": "2024-11-05",
-            "clientInfo": {"name": "intermcp-python-sdk", "version": "0.2.0"},
+            "clientInfo": {"name": "intermcp-python-sdk", "version": "0.2.1"},
             "capabilities": {}
         })
 

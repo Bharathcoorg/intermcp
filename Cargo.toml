@@ -1,6 +1,6 @@
 [package]
 name = "intermcp"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Bharath B R <bharathcoorg7@gmail.com>"]
 description = "Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer Blockchain and open for all"

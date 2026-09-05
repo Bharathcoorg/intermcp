@@ -10,7 +10,7 @@
 ```
 
 ### Ultra-Fast, Safe Model Context Protocol (MCP) Engine & Multiplexing Hub in Pure Rust
-**Sub-millisecond dispatch • 457,000+ ops/sec* • < 3.8 MB RAM • SafeFS Sandboxing • 1-Click Multi-IDE Setup**
+**Sub-millisecond dispatch • 457,000+ ping ops/sec* • < 3.8 MB RAM • SafeFS Sandboxing • 1-Click Multi-IDE Setup**
 
 *Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer Blockchain and open for all.*
 
@@ -18,7 +18,7 @@
   <a href="https://crates.io/crates/intermcp"><img src="https://img.shields.io/crates/v/intermcp.svg?style=for-the-badge&logo=rust" alt="Crates.io" /></a>
   <a href="https://www.npmjs.com/package/intermcp"><img src="https://img.shields.io/npm/v/intermcp.svg?style=for-the-badge&logo=npm" alt="npm" /></a>
   <a href="https://pypi.org/project/intermcp/"><img src="https://img.shields.io/pypi/v/intermcp.svg?style=for-the-badge&logo=pypi" alt="PyPI" /></a>
-  <a href="https://github.com/Bharathcoorg/intermcp/releases/tag/v0.2.0"><img src="https://img.shields.io/github/v/release/Bharathcoorg/intermcp?style=for-the-badge&logo=github" alt="GitHub release" /></a>
+  <a href="https://github.com/Bharathcoorg/intermcp/releases/tag/v0.2.1"><img src="https://img.shields.io/github/v/release/Bharathcoorg/intermcp?style=for-the-badge&logo=github" alt="GitHub release" /></a>
   <a href="https://github.com/Bharathcoorg/intermcp/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Bharathcoorg/intermcp/ci.yml?branch=main&style=for-the-badge&logo=githubactions" alt="CI Status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License: MIT" /></a>
 </p>
@@ -38,9 +38,9 @@ InterMCP core and multi-language client SDKs are officially published and immedi
 | **Rust** | **crates.io** | `cargo add intermcp` | [![crates.io](https://img.shields.io/crates/v/intermcp.svg)](https://crates.io/crates/intermcp) • [crates.io/crates/intermcp](https://crates.io/crates/intermcp) |
 | **JavaScript / TypeScript** | **npm** | `npm install intermcp` | [![npm](https://img.shields.io/npm/v/intermcp.svg)](https://www.npmjs.com/package/intermcp) • [npmjs.com/package/intermcp](https://www.npmjs.com/package/intermcp) |
 | **Python** | **PyPI** | `pip install intermcp` | [![PyPI](https://img.shields.io/pypi/v/intermcp.svg)](https://pypi.org/project/intermcp/) • [pypi.org/project/intermcp](https://pypi.org/project/intermcp/) |
-| **Go** | **Go Modules** | `go get github.com/Bharathcoorg/intermcp/go/intermcp@v0.2.0` | [pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp](https://pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp) |
+| **Go** | **Go Modules** | `go get github.com/Bharathcoorg/intermcp/go/intermcp@v0.2.1` | [pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp](https://pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp) |
 | **PHP** | **Packagist** | `composer require bharathcoorg/intermcp` | [packagist.org/packages/bharathcoorg/intermcp](https://packagist.org/packages/bharathcoorg/intermcp) |
-| **Standalone Binaries** | **GitHub Releases** | Prebuilt binaries for Linux, macOS (ARM & Intel), Windows | [GitHub v0.2.0 Release Assets](https://github.com/Bharathcoorg/intermcp/releases/tag/v0.2.0) |
+| **Standalone Binaries** | **GitHub Releases** | Prebuilt binaries for Linux, macOS (ARM & Intel), Windows | [GitHub v0.2.1 Release Assets](https://github.com/Bharathcoorg/intermcp/releases/tag/v0.2.1) |
 
 ---
 
@@ -190,8 +190,8 @@ Any environment variables containing sensitive keys (`API_KEY`, `SECRET`, `TOKEN
 ### 7. Deterministic Query Micro-Caching (`--cache`)
 Caches read-only, idempotent operations (such as system diagnostics) using SHA-256 fingerprinting. Read/write filesystem tools remain uncached to guarantee fresh data.
 
-### 8. ADR 001: Signed Execution Receipts & Provenance (`--receipts`)
-Generates tamper-evident cryptographic receipts for every tool execution using RFC 8785 JSON Canonicalization Scheme (JCS) and HMAC-SHA256 digital signatures. Authenticate offline with:
+### 8. ADR 001: HMAC-Authenticated Execution Receipts & Provenance (`--receipts`)
+Generates tamper-evident cryptographic receipts for every tool execution using RFC 8785 JSON Canonicalization Scheme (JCS) and HMAC-SHA256 authentication codes. Authenticate offline with:
 ```bash
 intermcp verify-receipts audit.receipts.json --key secret-key
 ```
@@ -239,7 +239,7 @@ max_calls_per_minute = 60
 ```
 
 ### 14. Dynamic Data-Flow Taint Tracking (`src/taint.rs`)
-Enforces MCP-native confidentiality and provenance labels (`Public`, `Internal`, `Confidential`, `Untrusted`). Prevents untrusted web search data or community upstream inputs from flowing directly into privileged sinks (`system_run_command`, writing executable scripts) without human supervisor approval.
+Enforces MCP-native confidentiality and provenance labels (`Public`, `Internal`, `Confidential`, `Untrusted`). Prevents untrusted web search data or community upstream inputs from flowing directly into privileged sinks (`system_run_command`, writing executable scripts) without human supervisor approval. Note: Taint propagation across unstructured text transformations is cooperative and tracked on structured JSON envelopes.
 
 ### 15. WebAssembly Module Inspector (`src/wasm.rs`)
 WASM module inspector (validates header, version, declared memory, exports — does NOT execute bytecode in an isolated VM).
@@ -281,7 +281,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut server = Server::new("custom-server", "0.2.0");
+    let mut server = Server::new("custom-server", "0.2.1");
 
     server.add_tool(Box::new(SimpleTool::new(
         "calculate_hash",

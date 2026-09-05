@@ -231,11 +231,19 @@ pub fn configure_mcp_json(ide_name: &str, config_path: &Path, binary_path: &str)
         }
     }
 
-    let mcp_servers = config
-        .as_object_mut()
-        .unwrap()
-        .entry("mcpServers")
-        .or_insert_with(|| json!({}));
+    let root_obj = match config.as_object_mut() {
+        Some(obj) => obj,
+        None => {
+            return SetupResult {
+                name: ide_name.to_string(),
+                path: config_path.to_path_buf(),
+                success: false,
+                message: "Internal error: configuration is not a valid JSON object".to_string(),
+            };
+        }
+    };
+
+    let mcp_servers = root_obj.entry("mcpServers").or_insert_with(|| json!({}));
 
     if let Some(servers_obj) = mcp_servers.as_object_mut() {
         let new_entry = json!({
@@ -356,9 +364,19 @@ pub fn configure_zed_json(config_path: &Path, binary_path: &str) -> SetupResult 
         }
     }
 
-    let context_servers = config
-        .as_object_mut()
-        .unwrap()
+    let root_obj = match config.as_object_mut() {
+        Some(obj) => obj,
+        None => {
+            return SetupResult {
+                name: "Zed Editor".to_string(),
+                path: config_path.to_path_buf(),
+                success: false,
+                message: "Internal error: configuration is not a valid JSON object".to_string(),
+            };
+        }
+    };
+
+    let context_servers = root_obj
         .entry("context_servers")
         .or_insert_with(|| json!({}));
 

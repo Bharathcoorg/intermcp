@@ -91,6 +91,9 @@ enum Commands {
     Replay {
         /// Path to .imcp session recording file
         trace: String,
+        /// Allow execution of mutating commands during replay (default: false, safe read-only replay)
+        #[arg(long, default_value_t = false)]
+        allow_mutations: bool,
     },
     /// Cryptographically verify the integrity of an SMAC audit chain
     VerifyAudit {
@@ -413,11 +416,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server.run_stdio().await?;
             }
         }
-        Commands::Replay { trace } => {
-            println!("\n▶️ Replaying session flight trace from '{}'...", trace);
+        Commands::Replay {
+            trace,
+            allow_mutations,
+        } => {
+            println!(
+                "\n▶️ Replaying session flight trace from '{}' (allow_mutations: {})...",
+                trace, allow_mutations
+            );
             let server = intermcp::create_default_server();
-            let summary =
-                intermcp::SessionReplayer::replay(std::path::Path::new(&trace), &server).await?;
+            let summary = intermcp::SessionReplayer::replay_with_options(
+                std::path::Path::new(&trace),
+                &server,
+                allow_mutations,
+            )
+            .await?;
             println!("📊 Replay complete:");
             println!("   • Total calls processed: {}", summary.total_calls);
             println!("   • Matched responses: {}", summary.matched);
