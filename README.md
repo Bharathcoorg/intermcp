@@ -15,6 +15,10 @@
 *Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer Blockchain and open for all.*
 
 <p align="center">
+  <img src="assets/intermcp_hero_banner.jpg" alt="InterMCP - The Ultra-Fast, Memory-Safe MCP Runtime & Hub in Pure Rust" width="100%" />
+</p>
+
+<p align="center">
   <a href="https://crates.io/crates/intermcp"><img src="https://img.shields.io/crates/v/intermcp.svg?style=for-the-badge&logo=rust" alt="Crates.io" /></a>
   <a href="https://www.npmjs.com/package/intermcp"><img src="https://img.shields.io/npm/v/intermcp.svg?style=for-the-badge&logo=npm" alt="npm" /></a>
   <a href="https://pypi.org/project/intermcp/"><img src="https://img.shields.io/pypi/v/intermcp.svg?style=for-the-badge&logo=pypi" alt="PyPI" /></a>
@@ -135,6 +139,10 @@ intermcp bench --iterations 5000
 
 > ℹ️ **Benchmark Methodology**: Reference SDK metrics reflect standard runtime startup and cross-process invocation overhead. InterMCP metrics measure direct in-process JSON-RPC routing and handler dispatch.  
 > \* *Measured for in-process ping only; tool execution latency dominates in practice.*
+
+<p align="center">
+  <img src="assets/intermcp_benchmark_card.jpg" alt="InterMCP Performance Benchmark Card" width="90%" />
+</p>
 
 ---
 
