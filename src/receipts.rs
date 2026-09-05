@@ -220,17 +220,32 @@ impl ReceiptBook {
 
         let line = serde_json::to_string(&signed).map_err(FastMcpError::Serialization)?;
 
+        static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let random_suffix: u128 = rand::random();
+
         let parent = guard
             .file_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
+        let parent = if parent.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            parent
+        };
+        if !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
         let temp_name = format!(
-            ".receipt_tmp_{}_{}.tmp",
+            ".receipt_tmp_{}_{}_{}_{:032x}.tmp",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_nanos()
+                .as_nanos(),
+            count,
+            random_suffix
         );
         let temp_path = parent.join(temp_name);
 

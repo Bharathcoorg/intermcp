@@ -88,13 +88,28 @@ pub fn configure_all_ides(binary_path: &str) -> Vec<SetupResult> {
 }
 
 fn atomic_write_json(parent: &Path, target: &Path, content: &str) -> Result<(), String> {
+    static CONFIG_TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = CONFIG_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let random_suffix: u128 = rand::random();
+
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    if !parent.exists() {
+        let _ = fs::create_dir_all(parent);
+    }
+
     let temp_name = format!(
-        ".intermcp_tmp_{}_{}.tmp",
+        ".intermcp_tmp_{}_{}_{}_{:032x}.tmp",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos()
+            .as_nanos(),
+        count,
+        random_suffix
     );
     let temp_path = parent.join(temp_name);
     let mut file = fs::File::create(&temp_path)

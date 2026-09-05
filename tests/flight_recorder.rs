@@ -2,12 +2,11 @@ use intermcp::protocol::JsonRpcResponse;
 use intermcp::record::{SessionRecorder, SessionReplayer};
 use intermcp::Server;
 use serde_json::json;
-use tempfile::NamedTempFile;
 
 #[tokio::test]
 async fn test_session_recorder_and_replay() {
-    let temp = NamedTempFile::new().unwrap();
-    let trace_path = temp.path().to_path_buf();
+    let temp = tempfile::tempdir().unwrap();
+    let trace_path = temp.path().join("trace.jsonl");
 
     let recorder = SessionRecorder::new(&trace_path).unwrap();
     let server = Server::new("test-recorder", "0.1.0").with_recorder(recorder);

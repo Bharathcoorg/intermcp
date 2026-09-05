@@ -5,7 +5,6 @@ use intermcp::receipts::{
 use intermcp::tool::SimpleTool;
 use intermcp::Server;
 use serde_json::json;
-use tempfile::NamedTempFile;
 
 #[test]
 fn test_rfc_8785_jcs_canonicalization_ordering() {
@@ -84,11 +83,11 @@ fn test_rfc_8785_integer_boundary_round_trip() {
 
 #[test]
 fn test_signed_receipt_chain_generation_and_verification() {
-    let tmp = NamedTempFile::new().unwrap();
-    let path = tmp.path();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let path = tmp_dir.path().join("receipts.jsonl");
     let key = b"adversarial-testing-key-secret-999";
 
-    let book = ReceiptBook::new(path, key, "node-prod-01").unwrap();
+    let book = ReceiptBook::new(&path, key, "node-prod-01").unwrap();
 
     let input = json!({"path": "src/main.rs"});
     let output = json!({"status": "ok", "lines": 42});
@@ -129,12 +128,12 @@ fn test_signed_receipt_chain_generation_and_verification() {
     assert_eq!(r2.receipt.prev_receipt_hash, r1.receipt_hash);
 
     // Verify entire chain with key
-    let summary = verify_receipt_chain_file(path, Some(key)).unwrap();
+    let summary = verify_receipt_chain_file(&path, Some(key)).unwrap();
     assert_eq!(summary.count, 2);
     assert_eq!(summary.last_hash, r2.receipt_hash);
 
     // Verify with invalid key fails
-    let err = verify_receipt_chain_file(path, Some(b"wrong-key"))
+    let err = verify_receipt_chain_file(&path, Some(b"wrong-key"))
         .expect_err("Wrong key must fail verification");
     assert!(err
         .to_string()
@@ -143,11 +142,11 @@ fn test_signed_receipt_chain_generation_and_verification() {
 
 #[test]
 fn test_signed_receipt_tamper_detection() {
-    let tmp = NamedTempFile::new().unwrap();
-    let path = tmp.path();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let path = tmp_dir.path().join("receipts.jsonl");
     let key = b"my-signing-key";
 
-    let book = ReceiptBook::new(path, key, "node-1").unwrap();
+    let book = ReceiptBook::new(&path, key, "node-1").unwrap();
     book.record_execution(
         "s1",
         "tool_a",
@@ -170,22 +169,22 @@ fn test_signed_receipt_tamper_detection() {
     .unwrap();
 
     // Read content and alter 1 byte in the input hash of receipt 1
-    let content = std::fs::read_to_string(path).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
     let tampered = content.replacen("tool_a", "tool_x", 1);
-    std::fs::write(path, tampered).unwrap();
+    std::fs::write(&path, tampered).unwrap();
 
-    let err = verify_receipt_chain_file(path, Some(key))
+    let err = verify_receipt_chain_file(&path, Some(key))
         .expect_err("Tampered receipt must fail verification");
     assert!(err.to_string().contains("verification failed"));
 }
 
 #[tokio::test]
 async fn test_server_with_signed_receipts_integration() {
-    let tmp = NamedTempFile::new().unwrap();
-    let path = tmp.path();
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let path = tmp_dir.path().join("receipts.jsonl");
     let key = b"server-integration-key";
 
-    let book = ReceiptBook::new(path, key, "test-server-node").unwrap();
+    let book = ReceiptBook::new(&path, key, "test-server-node").unwrap();
     let mut server = Server::new("test-receipts-server", "1.0.0");
 
     server.add_tool(Box::new(SimpleTool::new(
@@ -221,12 +220,12 @@ async fn test_server_with_signed_receipts_integration() {
     assert!(resp.unwrap().result.is_some());
 
     // Verify receipt was written to file
-    let summary = verify_receipt_chain_file(path, Some(key)).unwrap();
+    let summary = verify_receipt_chain_file(&path, Some(key)).unwrap();
     assert_eq!(summary.count, 1);
     assert!(!summary.last_hash.is_empty());
 
     // Verify session ID matches server session ID and does not use hardcoded phantom session-1
-    let raw_receipt_content = std::fs::read_to_string(path).unwrap();
+    let raw_receipt_content = std::fs::read_to_string(&path).unwrap();
     assert!(raw_receipt_content.contains(server.session_id()));
     assert!(!raw_receipt_content.contains("\"session_id\":\"session-1\""));
 }

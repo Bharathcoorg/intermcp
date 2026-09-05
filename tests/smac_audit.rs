@@ -1,12 +1,11 @@
 use intermcp::smac::{verify_smac_log, SmacLogger};
 use serde_json::json;
 use std::fs::{read_to_string, write};
-use tempfile::NamedTempFile;
 
 #[test]
 fn test_smac_audit_chain_verification() {
-    let temp = NamedTempFile::new().unwrap();
-    let log_path = temp.path().to_path_buf();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("audit.log");
 
     let logger = SmacLogger::new(&log_path).unwrap();
 
@@ -29,8 +28,8 @@ fn test_smac_audit_chain_verification() {
 
 #[test]
 fn test_smac_tamper_detection() {
-    let temp = NamedTempFile::new().unwrap();
-    let log_path = temp.path().to_path_buf();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("audit.log");
 
     let logger = SmacLogger::new(&log_path).unwrap();
     logger.record("tool_a", &json!({"a": 1}), &json!({"res": "ok"}));
