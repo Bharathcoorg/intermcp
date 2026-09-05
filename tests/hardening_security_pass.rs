@@ -144,20 +144,22 @@ async fn test_session_replayer_blocks_mutations_by_default() {
 #[tokio::test]
 async fn test_fs_search_text_respects_custom_sensitive_paths() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let root = temp_dir.path();
+    let root = dunce::canonicalize(temp_dir.path()).unwrap();
 
     // Create a normal file
     let normal_file = root.join("normal.txt");
     let mut f1 = File::create(&normal_file).unwrap();
     writeln!(f1, "target_keyword_in_normal").unwrap();
+    drop(f1);
 
     // Create a custom sensitive file
     let sensitive_file = root.join("company_vault.secrets");
     let mut f2 = File::create(&sensitive_file).unwrap();
     writeln!(f2, "target_keyword_in_secrets").unwrap();
+    drop(f2);
 
     // Configure sandbox policy with custom sensitive pattern
-    let sb = SandboxPolicy::new(vec![root.to_path_buf()])
+    let sb = SandboxPolicy::new(vec![root.clone()])
         .with_additional_sensitive_files(vec!["company_vault.secrets".to_string()]);
 
     let tool = create_fs_search_tool(sb);
@@ -167,6 +169,11 @@ async fn test_fs_search_text_respects_custom_sensitive_paths() {
     });
 
     let res = tool.execute(args).await.unwrap();
+    assert!(
+        !res.is_error,
+        "fs_search_text should succeed: {:?}",
+        res.content
+    );
     let content = match &res.content[0] {
         intermcp::protocol::ContentItem::Text { text } => text,
         _ => panic!("Expected text content"),
@@ -174,10 +181,12 @@ async fn test_fs_search_text_respects_custom_sensitive_paths() {
 
     assert!(
         content.contains("normal.txt"),
-        "Should find match in normal file"
+        "Should find match in normal file, got: {}",
+        content
     );
     assert!(
         !content.contains("company_vault.secrets"),
-        "Must NOT search inside sensitive file"
+        "Must NOT search inside sensitive file, got: {}",
+        content
     );
 }
