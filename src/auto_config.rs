@@ -61,9 +61,17 @@ pub fn configure_all_ides(binary_path: &str) -> Vec<SetupResult> {
     ));
 
     // 8. Antigravity IDE
-    let antigravity_path = get_antigravity_path();
+    let antigravity_ide_path = get_antigravity_ide_path();
     results.push(configure_mcp_json(
         "Antigravity IDE",
+        &antigravity_ide_path,
+        binary_path,
+    ));
+
+    // 8b. Antigravity (Global)
+    let antigravity_path = get_antigravity_path();
+    results.push(configure_mcp_json(
+        "Antigravity (Global)",
         &antigravity_path,
         binary_path,
     ));
@@ -608,6 +616,25 @@ fn get_continue_path() -> PathBuf {
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         PathBuf::from(home).join(".continue").join("config.json")
+    }
+}
+
+fn get_antigravity_ide_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
+        PathBuf::from(userprofile)
+            .join(".gemini")
+            .join("antigravity-ide")
+            .join("mcp_config.json")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        PathBuf::from(home)
+            .join(".gemini")
+            .join("antigravity-ide")
+            .join("mcp_config.json")
     }
 }
 
