@@ -1,0 +1,12 @@
+# Smithery configuration for InterMCP
+# Documentation: https://smithery.ai/docs/config
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', 'intermcp@latest', 'serve']
+    })
