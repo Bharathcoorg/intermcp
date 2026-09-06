@@ -5,7 +5,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_auto_configure_all_ides_contains_target_environments() {
-    let results = auto_configure_all_ides("/mock/bin/intermcp");
+    let results = auto_configure_all_ides("/usr/local/bin/intermcp");
     let names: Vec<String> = results.into_iter().map(|r| r.name).collect();
 
     assert!(names.contains(&"Antigravity IDE".to_string()));

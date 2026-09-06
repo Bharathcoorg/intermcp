@@ -137,27 +137,36 @@ pub fn create_gravity_simulate_swap_tool() -> Box<dyn Tool> {
             let to = args.get("to_token").and_then(|v| v.as_str()).unwrap_or("GRAV").to_uppercase();
             let amount_in = args.get("amount_in").and_then(|v| v.as_f64()).unwrap_or(1.0);
 
-            // Calculation based on testnet AMM rate
-            let rate = match (from.as_str(), to.as_str()) {
-                ("ETH", "GRAV") => 705.25,
-                ("GRAV", "ETH") => 1.0 / 705.25,
-                ("USDC", "GRAV") => 1.0 / 4.85,
-                ("GRAV", "USDC") => 4.85,
-                _ => 1.0,
+            // Constant-product (x * y = k) AMM reserve configuration
+            let (reserve_in, reserve_out, token_in_usd_price) = match (from.as_str(), to.as_str()) {
+                ("ETH", "GRAV") => (5_000.0, 3_526_250.0, 3400.0),
+                ("GRAV", "ETH") => (3_526_250.0, 5_000.0, 4.85),
+                ("USDC", "GRAV") => (10_000_000.0, 2_061_855.0, 1.0),
+                ("GRAV", "USDC") => (2_061_855.0, 10_000_000.0, 4.85),
+                _ => (1_000_000.0, 1_000_000.0, 1.0),
             };
 
-            let estimated_out = amount_in * rate * 0.997; // 0.3% pool fee
-            let price_impact = if amount_in > 100.0 { "0.42%" } else { "0.02%" };
+            // Uniswap v2 constant-product formula with 0.3% LP fee deduction
+            let fee_multiplier = 0.997; // 30 bps fee
+            let amount_in_effective = amount_in * fee_multiplier;
+            let estimated_out = (reserve_out * amount_in_effective) / (reserve_in + amount_in_effective);
+
+            let spot_price = reserve_out / reserve_in;
+            let execution_price = estimated_out / amount_in.max(f64::EPSILON);
+            let price_impact_pct = ((spot_price - execution_price) / spot_price).max(0.0) * 100.0;
+            let fee_usd = (amount_in * 0.003 * token_in_usd_price).min(500.0);
 
             let result = json!({
                 "dex": "Gravity DEX Omni-VM",
                 "swapRoute": format!("{} -> Gravity Superchain Router -> {}", from, to),
                 "amountIn": amount_in,
                 "tokenIn": from,
-                "estimatedOut": estimated_out,
+                "estimatedOut": (estimated_out * 10_000.0).round() / 10_000.0,
                 "tokenOut": to,
-                "feeUsd": (amount_in * 0.003 * 3400.0).min(5.0),
-                "priceImpact": price_impact,
+                "spotPrice": (spot_price * 10_000.0).round() / 10_000.0,
+                "executionPrice": (execution_price * 10_000.0).round() / 10_000.0,
+                "feeUsd": (fee_usd * 100.0).round() / 100.0,
+                "priceImpact": format!("{:.2}%", price_impact_pct),
                 "executionEngine": "PolkaVM RISC-V Instant Settlement",
                 "gasUsedCycles": 42_010,
                 "readyToBroadcast": true

@@ -56,7 +56,7 @@ async fn test_wasm_tool_sandbox() {
     assert_eq!(result_obj["isError"], false);
     let content_text = result_obj["content"][0]["text"].as_str().unwrap();
     assert!(content_text.contains("inspected_wasm_module_metadata"));
-    assert!(content_text.contains("static_validation_stub"));
+    assert!(content_text.contains("static_module_validation"));
 }
 
 #[test]

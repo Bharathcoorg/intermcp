@@ -1,4 +1,4 @@
-/** InterMCP Node.js / TypeScript SDK v0.2.1 */
+/** InterMCP Node.js / TypeScript SDK v0.2.2 */
 const { spawn } = require("child_process");
 const readline = require("readline");
 const path = require("path");
@@ -63,7 +63,7 @@ class InterMcpClient {
     // Handshake
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
-      clientInfo: { name: "intermcp-node-client", version: "0.2.1" },
+      clientInfo: { name: "intermcp-node-client", version: "0.2.2" },
     });
   }
 

@@ -128,7 +128,7 @@ func (c *Client) Start() error {
 		"protocolVersion": "2024-11-05",
 		"clientInfo": map[string]string{
 			"name":    "intermcp-go-sdk",
-			"version": "0.2.1",
+			"version": "0.2.2",
 		},
 		"capabilities": map[string]interface{}{},
 	}

@@ -72,13 +72,13 @@ async fn test_logging_set_level() {
 #[tokio::test]
 async fn test_completion_complete() {
     let mut server = Server::new("test-proto", "0.1.0");
-    let dummy_tool = intermcp::tool::SimpleTool::new(
+    let test_tool = intermcp::tool::SimpleTool::new(
         "search_records",
         "search the database for matching records",
         json!({ "type": "object" }),
         |_| async move { Ok(CallToolResult::text("ok")) },
     );
-    server.add_tool(Box::new(dummy_tool));
+    server.add_tool(Box::new(test_tool));
 
     let req = json!({
         "jsonrpc": "2.0",

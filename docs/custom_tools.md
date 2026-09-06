@@ -9,7 +9,7 @@ InterMCP is designed to make writing tools fast, type-safe, and ergonomic in bot
 Add `intermcp` to your `Cargo.toml`:
 ```toml
 [dependencies]
-intermcp = "0.1"
+intermcp = "0.2"
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```

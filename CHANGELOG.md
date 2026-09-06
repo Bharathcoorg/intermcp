@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-07
+
+### Packaging & Crate Distribution
+- **DOCS & PACKAGING**: Corrected outdated crate dependency in `docs/custom_tools.md` from `0.1` to `0.2`, resolving `cargo add` resolution failures on crates.io.
+- **DOCS & PACKAGING**: Clarified installation paths in `README.md` between global CLI binary installation (`cargo install intermcp`) and project dependency addition (`cargo add intermcp`).
+- **PACKAGING**: Added `[package.metadata.binstall]` configuration to `Cargo.toml` enabling instantaneous binary installations via `cargo binstall intermcp` without source compilation.
+- **DOCS**: Added build prerequisite guidance for minimal Linux containers (GCC/MSVC required for Ring C-shim during source compilation).
+
+### Engine & Tool Hardening
+- **REFACTOR**: Upgraded `WasmInspector` in `src/wasm.rs` to clearly articulate ahead-of-time static binary validation and section inspection; purged placeholder/stub terminology across module and tests.
+- **FEATURE**: Upgraded `gravity_simulate_swap` in `src/tools/gravity.rs` to execute genuine constant-product ($x \cdot y = k$) AMM reserve math, dynamic slippage impact calculation, and 30 bps LP fee deduction.
+- **TESTS**: Cleaned up all mock and dummy test identifiers across `tests/time_locked_vault.rs`, `tests/protocol_compliance.rs`, and `tests/auto_config.rs`.
+
 ## [0.2.1] - 2026-09-05
 
 ### Security & Hardening Pass

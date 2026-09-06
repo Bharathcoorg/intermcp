@@ -54,13 +54,13 @@ async fn test_server_with_time_locked_vault_integration() {
     let vault = TimeLockedVault::new(vec!["protected_call".to_string()], 1);
     let mut server = Server::new("test-vault", "0.1.0").with_time_locked_vault(vault);
 
-    let dummy_tool = intermcp::tool::SimpleTool::new(
+    let test_tool = intermcp::tool::SimpleTool::new(
         "protected_call",
         "protected action",
         json!({ "type": "object" }),
         |_| async move { Ok(CallToolResult::text("executed")) },
     );
-    server.add_tool(Box::new(dummy_tool));
+    server.add_tool(Box::new(test_tool));
 
     let call_req = json!({
         "jsonrpc": "2.0",

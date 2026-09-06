@@ -1,6 +1,6 @@
 [package]
 name = "intermcp"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["Bharath B R <bharathcoorg7@gmail.com>"]
 description = "Ultra-fast, safe Model Context Protocol (MCP) engine and multiplexing hub in pure Rust, built for Interlayer Blockchain and open for all"
@@ -9,6 +9,24 @@ repository = "https://github.com/Bharathcoorg/intermcp"
 rust-version = "1.75"
 keywords = ["mcp", "blockchain", "interlayer", "ai-agents", "security"]
 categories = ["command-line-utilities", "development-tools", "network-programming", "asynchronous"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/intermcp-{ target }.{ archive-format }"
+bin-dir = "intermcp{ binary-ext }"
+pkg-fmt = "tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/intermcp-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/intermcp-darwin-aarch64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/intermcp-darwin-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/intermcp-windows-x86_64.zip"
+pkg-fmt = "zip"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
