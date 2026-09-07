@@ -16,6 +16,8 @@
 
 <p align="center">
   <a href="https://crates.io/crates/intermcp"><img src="https://img.shields.io/crates/v/intermcp.svg?style=for-the-badge&logo=rust" alt="Crates.io" /></a>
+  <a href="https://www.npmjs.com/package/intermcp"><img src="https://img.shields.io/npm/v/intermcp.svg?style=for-the-badge&logo=npm" alt="npm" /></a>
+  <a href="https://pypi.org/project/intermcp/"><img src="https://img.shields.io/pypi/v/intermcp.svg?style=for-the-badge&logo=pypi" alt="PyPI" /></a>
   <a href="https://github.com/Bharathcoorg/intermcp/releases/tag/v0.3.0"><img src="https://img.shields.io/github/v/release/Bharathcoorg/intermcp?style=for-the-badge&logo=github" alt="GitHub release" /></a>
   <a href="https://github.com/Bharathcoorg/intermcp/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Bharathcoorg/intermcp/ci.yml?branch=main&style=for-the-badge&logo=githubactions" alt="CI Status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License: MIT" /></a>
@@ -25,6 +27,10 @@
 | :--- | :--- | :--- | :--- |
 | **Rust (CLI Binary)** | **crates.io** | `cargo install intermcp` | [![crates.io](https://img.shields.io/crates/v/intermcp.svg)](https://crates.io/crates/intermcp) • [crates.io/crates/intermcp](https://crates.io/crates/intermcp) |
 | **Rust (Library SDK)** | **crates.io** | `cargo add intermcp` | [docs.rs/intermcp](https://docs.rs/intermcp) |
+| **JavaScript / TypeScript** | **npm** | `npm install intermcp` | [![npm](https://img.shields.io/npm/v/intermcp.svg)](https://www.npmjs.com/package/intermcp) • [npmjs.com/package/intermcp](https://www.npmjs.com/package/intermcp) |
+| **Python** | **PyPI** | `pip install intermcp` | [![PyPI](https://img.shields.io/pypi/v/intermcp.svg)](https://pypi.org/project/intermcp/) • [pypi.org/project/intermcp](https://pypi.org/project/intermcp) |
+| **Go** | **Go Modules** | `go get github.com/Bharathcoorg/intermcp/go/intermcp@v0.3.0` | [pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp](https://pkg.go.dev/github.com/Bharathcoorg/intermcp/go/intermcp) |
+| **PHP** | **Packagist** | `composer require bharathcoorg/intermcp` | [packagist.org/packages/bharathcoorg/intermcp](https://packagist.org/packages/bharathcoorg/intermcp) |
 | **Standalone Binaries** | **GitHub Releases** | Prebuilt binaries for Linux, macOS (ARM & Intel), Windows | [GitHub Releases](https://github.com/Bharathcoorg/intermcp/releases) |
 
 ---
@@ -65,7 +71,16 @@ irm https://raw.githubusercontent.com/Bharathcoorg/intermcp/main/install.ps1 | i
 
 ### 📦 Alternative Installation Methods
 
-#### Via Cargo (Rust Developers)
+#### Option A: Via NPX (Zero Install)
+```bash
+# 1-Click auto-configure all detected IDEs
+npx intermcp setup
+
+# Or run stdio server directly
+npx intermcp serve
+```
+
+#### Option B: Via Cargo (Rust Developers)
 ```bash
 # Install the standalone binary globally
 cargo install intermcp
@@ -267,7 +282,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut server = Server::new("custom-server", "0.2.2");
+    let mut server = Server::new("custom-server", "0.3.0");
 
     server.add_tool(Box::new(SimpleTool::new(
         "calculate_hash",
@@ -286,6 +301,114 @@ async fn main() -> Result<()> {
     server.run_stdio().await
 }
 ```
+
+---
+
+## 📦 TypeScript / Node SDK
+
+```bash
+npm install intermcp
+```
+
+```typescript
+import { InterMcpClient } from "intermcp";
+
+async function main() {
+  const client = new InterMcpClient();
+  await client.start();
+
+  const files = await client.callTool("fs_list_dir", { path: "." });
+  console.log("Files:", files);
+
+  client.stop();
+}
+
+main();
+```
+
+---
+
+## 🐍 Python Client & Agent Usage
+
+Any Python AI agent framework (LangChain, LlamaIndex, CrewAI, AutoGen) or script can interface with InterMCP directly using standard JSON-RPC 2024-11-05 over stdio or HTTP/SSE:
+
+```python
+import subprocess, json
+
+# 1. Spawn the native InterMCP engine
+proc = subprocess.Popen(
+    ["intermcp", "serve"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+)
+
+# 2. Handshake
+init_req = json.dumps({
+    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+    "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "agent", "version": "1.0"}}
+}) + "\n"
+proc.stdin.write(init_req); proc.stdin.flush()
+init_resp = json.loads(proc.stdout.readline())
+
+# 3. Call any tool with sub-microsecond latency
+call_req = json.dumps({
+    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+    "params": {"name": "system_info", "arguments": {}}
+}) + "\n"
+proc.stdin.write(call_req); proc.stdin.flush()
+result = json.loads(proc.stdout.readline())
+print("Result:", result["result"])
+```
+*See [`examples/python_client.py`](examples/python_client.py) for a complete, zero-dependency Python client class.*
+
+---
+
+## 🐹 Go Client Usage
+
+For cloud-native infrastructure, DevOps pipelines, and Go microservices:
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "github.com/Bharathcoorg/intermcp/go/intermcp"
+)
+
+func main() {
+    client := intermcp.NewClient("") // Discovers local binary or PATH
+    if err := client.Start(); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    result, err := client.CallTool("system_info", map[string]interface{}{})
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Result:", result.Content[0].Text)
+}
+```
+*See [`examples/go_client.go`](examples/go_client.go) and [`go/`](go/) for the complete Go module.*
+
+---
+
+## 🐘 PHP Client Usage
+
+For Laravel, Symfony, WordPress, and PHP web backends:
+
+```php
+use InterMcp\Client;
+
+$client = new Client();
+$client->start();
+
+$result = $client->callTool('system_info', []);
+echo json_encode($result, JSON_PRETTY_PRINT);
+
+$client->close();
+```
+*See [`examples/php_client.php`](examples/php_client.php) and [`php/`](php/) for the complete Composer package.*
 
 ---
 

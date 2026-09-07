@@ -7,7 +7,7 @@ description = "Ultra-fast, safe Model Context Protocol (MCP) engine and multiple
 license = "MIT"
 repository = "https://github.com/Bharathcoorg/intermcp"
 rust-version = "1.75"
-keywords = ["mcp", "model-context-protocol", "ai-agents", "security", "sandbox"]
+keywords = ["mcp", "protocol", "ai-agents", "security", "sandbox"]
 categories = ["command-line-utilities", "development-tools", "network-programming", "asynchronous"]
 exclude = [
     "php/**",
