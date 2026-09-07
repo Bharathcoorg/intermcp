@@ -129,6 +129,7 @@ pub fn configure_child_isolation(cmd: &mut tokio::process::Command) {
         cmd.pre_exec(|| {
             // Set new process group on POSIX so killpg kills all children
             let _ = libc::setpgid(0, 0);
+            #[cfg(target_os = "linux")]
             let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
             let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
             let _ = libc::signal(libc::SIGTTIN, libc::SIG_IGN);

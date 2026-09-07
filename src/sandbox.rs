@@ -137,7 +137,7 @@ impl HardlinkExt for Path {
         {
             if let Ok(meta) = std::fs::symlink_metadata(self) {
                 use std::os::unix::fs::MetadataExt;
-                return meta.nlink() > 1;
+                return meta.is_file() && meta.nlink() > 1;
             }
             false
         }
@@ -562,7 +562,9 @@ impl SandboxPolicy {
                                 ancestor.display()
                             )));
                         }
-                        if ancestor.is_hardlink() || meta.is_hardlink() {
+                        if (ancestor.is_file() || meta.is_file())
+                            && (ancestor.is_hardlink() || meta.is_hardlink())
+                        {
                             return Err(FastMcpError::ToolExecution(format!(
                                 "SafeFS Violation: Hardlink detected at '{}'. Hardlinks are prohibited.",
                                 ancestor.display()
@@ -606,7 +608,9 @@ impl SandboxPolicy {
                             target_to_check.display()
                         )));
                     }
-                    if target_to_check.is_hardlink() || meta.is_hardlink() {
+                    if (target_to_check.is_file() || meta.is_file())
+                        && (target_to_check.is_hardlink() || meta.is_hardlink())
+                    {
                         return Err(FastMcpError::ToolExecution(format!(
                             "SafeFS Violation: Hardlink detected at '{}'. Hardlinks are prohibited.",
                             target_to_check.display()
