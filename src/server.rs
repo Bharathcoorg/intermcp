@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::cache::ToolCache;
 use crate::error::FastMcpError;
@@ -240,7 +240,7 @@ pub struct Server {
     prompts: HashMap<String, Arc<dyn Prompt>>,
     cache: Option<Arc<ToolCache>>,
     guardrail: Option<Arc<GuardrailPolicy>>,
-    cancellations: Arc<RwLock<HashMap<Value, CancellationToken>>>,
+    cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
     recorder: Option<SessionRecorder>,
     smac: Option<Arc<SmacLogger>>,
     vault_lock: Option<Arc<TimeLockedVault>>,
@@ -450,9 +450,30 @@ impl Server {
                     "notifications/cancelled" => {
                         if let Some(params) = req.params {
                             if let Some(target_id) = params.get("requestId") {
-                                if let Some(token) = self.cancellations.read().get(target_id) {
+                                let key = match target_id {
+                                    Value::String(s) => s.clone(),
+                                    Value::Number(n) => n.to_string(),
+                                    _ => {
+                                        return Some(JsonRpcResponse::error(
+                                            Value::Null,
+                                            -32600,
+                                            "Invalid Request: requestId must be string or number"
+                                                .into(),
+                                            None,
+                                        ));
+                                    }
+                                };
+                                if let Some(token) = self.cancellations.read().get(&key) {
                                     token.cancel();
                                 }
+                            } else {
+                                return Some(JsonRpcResponse::error(
+                                    Value::Null,
+                                    -32600,
+                                    "Invalid Request: missing requestId in notifications/cancelled"
+                                        .into(),
+                                    None,
+                                ));
                             }
                         }
                     }
@@ -483,8 +504,26 @@ impl Server {
 
         match req.method.as_str() {
             "initialize" => {
+                let client_proto_version = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("protocolVersion"))
+                    .and_then(|v| v.as_str());
+
+                const KNOWN_PROTOCOLS: &[&str] = &["2024-11-05", "2024-10-07", "0.1.0"];
+
+                let negotiated_version = match client_proto_version {
+                    Some(v)
+                        if crate::protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&v)
+                            || KNOWN_PROTOCOLS.contains(&v) =>
+                    {
+                        v.to_string()
+                    }
+                    _ => LATEST_PROTOCOL_VERSION.to_string(),
+                };
+
                 let result = InitializeResult {
-                    protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
+                    protocol_version: negotiated_version,
                     capabilities: ServerCapabilities {
                         tools: Some(CapabilityInfo {
                             list_changed: Some(false),
@@ -704,7 +743,7 @@ impl Server {
                                 }
 
                                 let cancel_token = CancellationToken::new();
-                                let cancel_key = req_id.clone();
+                                let cancel_key = req_id.to_string_key();
                                 self.cancellations
                                     .write()
                                     .insert(cancel_key.clone(), cancel_token.clone());
@@ -804,7 +843,13 @@ impl Server {
 
                                         let json_res = json!(tool_result);
                                         if let Some(smac) = &self.smac {
-                                            smac.record(name, &arguments, &json_res);
+                                            if let Err(e) = smac.record(name, &arguments, &json_res)
+                                            {
+                                                tracing::warn!(
+                                                    "Failed to record SMAC entry: {}",
+                                                    e
+                                                );
+                                            }
                                         }
                                         if let Some(receipt_book) = &self.receipt_book {
                                             let schema_hash = crate::receipts::hash_canonical_json(
@@ -998,6 +1043,16 @@ impl Server {
     }
 
     async fn process_raw_message(&self, trimmed: &str) -> Option<String> {
+        if trimmed.len() > 10 * 1024 * 1024 {
+            let err = JsonRpcResponse::error(
+                Value::Null,
+                -32600,
+                "Invalid Request: payload exceeds 10 MiB limit".into(),
+                None,
+            );
+            return serde_json::to_string(&err).ok();
+        }
+
         if trimmed.starts_with('[') {
             let parsed: Result<Vec<Value>, _> = serde_json::from_str(trimmed);
             match parsed {
@@ -1021,36 +1076,44 @@ impl Server {
                         return serde_json::to_string(&err).ok();
                     }
 
-                    let mut responses = Vec::new();
-                    for item in items {
-                        let id = item.get("id").cloned().unwrap_or(Value::Null);
-                        let jsonrpc = item.get("jsonrpc").and_then(|v| v.as_str());
-                        if jsonrpc != Some("2.0") {
-                            responses.push(JsonRpcResponse::error(
-                                id,
-                                -32600,
-                                "Invalid Request: jsonrpc must be '2.0'".into(),
-                                None,
-                            ));
-                            continue;
-                        }
+                    use futures::stream::{self, StreamExt};
 
-                        match serde_json::from_value::<JsonRpcRequest>(item) {
-                            Ok(req) => {
-                                if let Some(resp) = self.handle_request(req).await {
-                                    responses.push(resp);
-                                }
+                    let stream =
+                        stream::iter(items.into_iter().enumerate()).map(|(idx, item)| async move {
+                            let id = item.get("id").cloned().unwrap_or(Value::Null);
+                            let jsonrpc = item.get("jsonrpc").and_then(|v| v.as_str());
+                            if jsonrpc != Some("2.0") {
+                                return (
+                                    idx,
+                                    Some(JsonRpcResponse::error(
+                                        id,
+                                        -32600,
+                                        "Invalid Request: jsonrpc must be '2.0'".into(),
+                                        None,
+                                    )),
+                                );
                             }
-                            Err(e) => {
-                                responses.push(JsonRpcResponse::error(
-                                    id,
-                                    -32600,
-                                    format!("Invalid Request: {}", e),
-                                    None,
-                                ));
+
+                            match serde_json::from_value::<JsonRpcRequest>(item) {
+                                Ok(req) => (idx, self.handle_request(req).await),
+                                Err(e) => (
+                                    idx,
+                                    Some(JsonRpcResponse::error(
+                                        id,
+                                        -32600,
+                                        format!("Invalid Request: {}", e),
+                                        None,
+                                    )),
+                                ),
                             }
-                        }
-                    }
+                        });
+
+                    let mut results: Vec<(usize, Option<JsonRpcResponse>)> =
+                        stream.buffer_unordered(8).collect().await;
+                    results.sort_by_key(|(idx, _)| *idx);
+
+                    let responses: Vec<JsonRpcResponse> =
+                        results.into_iter().filter_map(|(_, resp)| resp).collect();
 
                     if responses.is_empty() {
                         None
@@ -1131,6 +1194,10 @@ impl Server {
             .await
             .map_err(|e| FastMcpError::Internal(e.to_string()))?
         {
+            if line.len() > 10 * 1024 * 1024 {
+                warn!("Inbound stdio line exceeded 10 MiB limit; skipping");
+                continue;
+            }
             if let Some(response_str) = self.handle_raw_message(&line).await {
                 stdout
                     .write_all(response_str.as_bytes())

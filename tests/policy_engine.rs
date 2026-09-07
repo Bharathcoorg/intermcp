@@ -104,7 +104,7 @@ async fn test_policy_engine_enforces_fs_list_dir() {
     // Attempting to list a denied directory must be blocked by PolicyEngine
     let req = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
-        id: Some(json!(1)),
+        id: Some(intermcp::protocol::Id::Number(1)),
         method: "tools/call".to_string(),
         params: Some(json!({
             "name": "fs_list_dir",
@@ -141,7 +141,7 @@ async fn test_policy_engine_enforces_fs_search_text() {
     // Attempting to search inside a denied directory must be blocked by PolicyEngine
     let req = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
-        id: Some(json!(1)),
+        id: Some(intermcp::protocol::Id::Number(1)),
         method: "tools/call".to_string(),
         params: Some(json!({
             "name": "fs_search_text",

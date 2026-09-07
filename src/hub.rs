@@ -1,4 +1,4 @@
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -26,6 +26,12 @@ pub struct UpstreamServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub pass_env: Vec<String>,
+    #[serde(default)]
+    pub expected_schema_hash: Option<String>,
+    #[serde(default)]
+    pub expected_description_hash: Option<String>,
 }
 
 pub const DANGEROUS_ENV_VARS: &[&str] = &[
@@ -49,6 +55,30 @@ pub const DANGEROUS_ENV_VARS: &[&str] = &[
     "PS4",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    Closed,
+    Open(std::time::Instant),
+    HalfOpen,
+}
+
+#[derive(Debug)]
+pub struct CircuitBreakerState {
+    pub state: CircuitState,
+    pub consecutive_errors: u32,
+    pub first_error_time: Option<std::time::Instant>,
+}
+
+impl Default for CircuitBreakerState {
+    fn default() -> Self {
+        Self {
+            state: CircuitState::Closed,
+            consecutive_errors: 0,
+            first_error_time: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubConfig {
     pub servers: Vec<UpstreamServerConfig>,
@@ -66,6 +96,7 @@ pub struct UpstreamHandle {
     name: String,
     tx: mpsc::Sender<HubRequest>,
     request_counter: AtomicU64,
+    pub circuit: Arc<Mutex<CircuitBreakerState>>,
 }
 
 impl UpstreamHandle {
@@ -89,6 +120,7 @@ impl UpstreamHandle {
             name,
             tx,
             request_counter: AtomicU64::new(1),
+            circuit: Arc::new(Mutex::new(CircuitBreakerState::default())),
         };
 
         handle.initialize().await?;
@@ -115,6 +147,30 @@ impl UpstreamHandle {
         id: u64,
         payload: String,
     ) -> Result<JsonRpcResponse, FastMcpError> {
+        let now = std::time::Instant::now();
+        {
+            let mut cb = self.circuit.lock();
+            match cb.state {
+                CircuitState::Closed => {}
+                CircuitState::Open(opened_at) => {
+                    if now.duration_since(opened_at) < Duration::from_secs(30) {
+                        return Err(FastMcpError::ToolExecution(format!(
+                            "Upstream '{}' circuit breaker is OPEN; failing fast",
+                            self.name
+                        )));
+                    } else {
+                        cb.state = CircuitState::HalfOpen;
+                    }
+                }
+                CircuitState::HalfOpen => {
+                    return Err(FastMcpError::ToolExecution(format!(
+                        "Upstream '{}' circuit breaker is HALF-OPEN (probe in flight)",
+                        self.name
+                    )));
+                }
+            }
+        }
+
         let (resp_tx, resp_rx) = oneshot::channel();
         let hub_req = HubRequest {
             id,
@@ -122,11 +178,15 @@ impl UpstreamHandle {
             response_tx: resp_tx,
         };
 
-        self.tx.send(hub_req).await.map_err(|_| {
-            FastMcpError::ToolExecution(format!("Upstream '{}' supervisor stopped", self.name))
-        })?;
+        if self.tx.send(hub_req).await.is_err() {
+            self.record_error();
+            return Err(FastMcpError::ToolExecution(format!(
+                "Upstream '{}' supervisor stopped",
+                self.name
+            )));
+        }
 
-        match tokio::time::timeout(Duration::from_secs(30), resp_rx).await {
+        let res = match tokio::time::timeout(Duration::from_secs(30), resp_rx).await {
             Ok(Ok(res)) => res,
             Ok(Err(_)) => Err(FastMcpError::ToolExecution(format!(
                 "Upstream '{}' response channel dropped",
@@ -136,6 +196,54 @@ impl UpstreamHandle {
                 "Upstream '{}' request timed out after 30 seconds",
                 self.name
             ))),
+        };
+
+        match &res {
+            Ok(_) => {
+                self.record_success();
+            }
+            Err(_) => {
+                self.record_error();
+            }
+        }
+
+        res
+    }
+
+    fn record_success(&self) {
+        let mut cb = self.circuit.lock();
+        cb.state = CircuitState::Closed;
+        cb.consecutive_errors = 0;
+        cb.first_error_time = None;
+    }
+
+    fn record_error(&self) {
+        let mut cb = self.circuit.lock();
+        let now = std::time::Instant::now();
+        match cb.state {
+            CircuitState::HalfOpen => {
+                cb.state = CircuitState::Open(now);
+                cb.consecutive_errors = 3;
+                cb.first_error_time = Some(now);
+            }
+            CircuitState::Closed => {
+                if let Some(first) = cb.first_error_time {
+                    if now.duration_since(first) > Duration::from_secs(30) {
+                        cb.consecutive_errors = 1;
+                        cb.first_error_time = Some(now);
+                    } else {
+                        cb.consecutive_errors += 1;
+                    }
+                } else {
+                    cb.consecutive_errors = 1;
+                    cb.first_error_time = Some(now);
+                }
+
+                if cb.consecutive_errors >= 3 {
+                    cb.state = CircuitState::Open(now);
+                }
+            }
+            CircuitState::Open(_) => {}
         }
     }
 
@@ -247,40 +355,31 @@ impl UpstreamSupervisor {
                 || k_upper.contains("SEED_PHRASE")
         };
 
-        let looks_like_secret_value = |v: &str| -> bool {
-            let trimmed = v.trim();
-            // Check hex string 32+ characters
-            if trimmed.len() >= 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-                return true;
-            }
-            // Check base64-encoded string 32+ characters
-            if trimmed.len() >= 32
-                && trimmed
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-            {
-                let has_upper = trimmed.chars().any(|c| c.is_ascii_uppercase());
-                let has_lower = trimmed.chars().any(|c| c.is_ascii_lowercase());
-                let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
-                let has_b64_punct =
-                    trimmed.contains('+') || trimmed.contains('/') || trimmed.contains('=');
-                if (has_upper && has_lower && has_digit) || has_b64_punct {
-                    return true;
-                }
-            }
-            false
-        };
-
-        let filtered_env: std::collections::HashMap<_, _> = config
-            .env
-            .iter()
-            .filter(|(k, v)| {
-                let is_dangerous = DANGEROUS_ENV_VARS
+        let filtered_env: std::collections::HashMap<&String, &String> =
+            if config.pass_env.is_empty() {
+                // If pass_env is empty, refuse to pass any env (forces operator opt-in)
+                std::collections::HashMap::new()
+            } else {
+                config
+                    .env
                     .iter()
-                    .any(|&d| d.eq_ignore_ascii_case(k));
-                !is_dangerous && !is_secret_name(k) && !looks_like_secret_value(v)
-            })
-            .collect();
+                    .filter(|(k, _v)| {
+                        let is_dangerous = DANGEROUS_ENV_VARS
+                            .iter()
+                            .any(|&d| d.eq_ignore_ascii_case(k));
+                        if is_dangerous {
+                            return false;
+                        }
+
+                        let in_pass_env = config.pass_env.iter().any(|p| p.eq_ignore_ascii_case(k));
+                        if in_pass_env {
+                            true
+                        } else {
+                            !is_secret_name(k)
+                        }
+                    })
+                    .collect()
+            };
 
         cmd.args(&config.args)
             .envs(filtered_env)
@@ -541,6 +640,8 @@ impl SupplyChainFirewall {
         &self,
         upstream_name: &str,
         tool: &ToolDefinition,
+        expected_desc_hash: Option<&str>,
+        expected_schema_hash: Option<&str>,
     ) -> Result<PinnedToolContract, FastMcpError> {
         if self.quarantined_upstreams.read().contains(upstream_name) {
             return Err(FastMcpError::SecurityViolation(format!(
@@ -549,9 +650,41 @@ impl SupplyChainFirewall {
             )));
         }
 
-        let (desc_hash, schema_hash) = Self::compute_hashes(&tool.description, &tool.input_schema);
-        let contract_key = format!("{}__{}", upstream_name, tool.name);
+        if expected_desc_hash.is_none() && expected_schema_hash.is_none() {
+            return Err(FastMcpError::SecurityViolation(
+                "Refusing TOFU; provide expected_*_hash or disable firewall".to_string(),
+            ));
+        }
 
+        let (desc_hash, schema_hash) = Self::compute_hashes(&tool.description, &tool.input_schema);
+
+        if let Some(expected_desc) = expected_desc_hash {
+            if expected_desc != desc_hash {
+                self.quarantined_upstreams
+                    .write()
+                    .insert(upstream_name.to_string());
+                self.persist_quarantine();
+                return Err(FastMcpError::SecurityViolation(format!(
+                    "Supply-Chain Firewall: Upstream '{}' drifted tool '{}' definition (description hash mismatch). Quarantining upstream.",
+                    upstream_name, tool.name
+                )));
+            }
+        }
+
+        if let Some(expected_schema) = expected_schema_hash {
+            if expected_schema != schema_hash {
+                self.quarantined_upstreams
+                    .write()
+                    .insert(upstream_name.to_string());
+                self.persist_quarantine();
+                return Err(FastMcpError::SecurityViolation(format!(
+                    "Supply-Chain Firewall: Upstream '{}' drifted tool '{}' definition (schema hash mismatch). Quarantining upstream.",
+                    upstream_name, tool.name
+                )));
+            }
+        }
+
+        let contract_key = format!("{}__{}", upstream_name, tool.name);
         let mut pinned = self.pinned_contracts.write();
         if let Some(existing) = pinned.get(&contract_key) {
             if existing.description_hash != desc_hash || existing.schema_hash != schema_hash {
@@ -679,7 +812,12 @@ pub async fn load_hub_tools_with_firewall(
                         }
 
                         if let Some(fw) = &firewall {
-                            if let Err(e) = fw.verify_and_pin(&srv_cfg.name, &tool) {
+                            if let Err(e) = fw.verify_and_pin(
+                                &srv_cfg.name,
+                                &tool,
+                                srv_cfg.expected_description_hash.as_deref(),
+                                srv_cfg.expected_schema_hash.as_deref(),
+                            ) {
                                 error!(
                                     "Supply-Chain Firewall drift detected: {}",
                                     redact_for_log(&e.to_string())

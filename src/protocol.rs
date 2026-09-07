@@ -2,12 +2,109 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LATEST_PROTOCOL_VERSION: &str = "2024-11-05";
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Id {
+    Number(i64),
+    String(String),
+    Null,
+}
+
+impl Id {
+    pub fn to_string_key(&self) -> String {
+        match self {
+            Id::Number(n) => n.to_string(),
+            Id::String(s) => s.clone(),
+            Id::Null => "null".to_string(),
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Id::Number(n) => Value::Number((*n).into()),
+            Id::String(s) => Value::String(s.clone()),
+            Id::Null => Value::Null,
+        }
+    }
+}
+
+impl std::fmt::Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Id::Number(n) => write!(f, "{}", n),
+            Id::String(s) => write!(f, "{}", s),
+            Id::Null => write!(f, "null"),
+        }
+    }
+}
+
+impl From<Id> for Value {
+    fn from(id: Id) -> Self {
+        id.to_value()
+    }
+}
+
+impl From<&Id> for Value {
+    fn from(id: &Id) -> Self {
+        id.to_value()
+    }
+}
+
+impl From<i64> for Id {
+    fn from(n: i64) -> Self {
+        Id::Number(n)
+    }
+}
+
+impl From<i32> for Id {
+    fn from(n: i32) -> Self {
+        Id::Number(n as i64)
+    }
+}
+
+impl From<u64> for Id {
+    fn from(n: u64) -> Self {
+        Id::Number(n as i64)
+    }
+}
+
+impl From<String> for Id {
+    fn from(s: String) -> Self {
+        Id::String(s)
+    }
+}
+
+impl From<&str> for Id {
+    fn from(s: &str) -> Self {
+        Id::String(s.to_string())
+    }
+}
+
+impl From<Value> for Id {
+    fn from(v: Value) -> Self {
+        match v {
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Id::Number(i)
+                } else if let Some(u) = n.as_u64() {
+                    Id::Number(u as i64)
+                } else {
+                    Id::String(n.to_string())
+                }
+            }
+            Value::String(s) => Id::String(s),
+            _ => Id::Null,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
     #[serde(default)]
-    pub id: Option<Value>,
+    pub id: Option<Id>,
     pub method: String,
     #[serde(default)]
     pub params: Option<Value>,
@@ -24,19 +121,19 @@ pub struct JsonRpcResponse {
 }
 
 impl JsonRpcResponse {
-    pub fn success(id: Value, result: Value) -> Self {
+    pub fn success(id: impl Into<Value>, result: Value) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
-            id,
+            id: id.into(),
             result: Some(result),
             error: None,
         }
     }
 
-    pub fn error(id: Value, code: i32, message: String, data: Option<Value>) -> Self {
+    pub fn error(id: impl Into<Value>, code: i32, message: String, data: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
-            id,
+            id: id.into(),
             result: None,
             error: Some(JsonRpcError {
                 code,

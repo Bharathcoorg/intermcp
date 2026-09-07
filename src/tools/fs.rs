@@ -47,7 +47,7 @@ pub fn create_fs_read_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                             "Security error: Symlink access is prohibited".to_string(),
                         ));
                     }
-                    if sym_meta.file_type().is_hardlink() || sym_meta.is_hardlink() {
+                    if safe_path.is_hardlink() || sym_meta.is_hardlink() {
                         return Ok(CallToolResult::error(
                             "SafeFS Violation: Hardlink detected at target. Hardlinks are prohibited.".to_string(),
                         ));
@@ -106,27 +106,10 @@ pub fn create_fs_write_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                     .ok_or_else(|| FastMcpError::InvalidRequest("Missing 'content' parameter".into()))?;
 
                 let path = Path::new(path_str);
-                let safe_path = match sb.validate_path(path) {
+                let safe_path = match sb.open_for_write_no_follow(path) {
                     Ok(p) => p,
                     Err(e) => return Ok(CallToolResult::error(e.to_string())),
                 };
-
-                if let Ok(sym_meta) = safe_path.symlink_metadata() {
-                    if sym_meta.file_type().is_symlink() {
-                        return Ok(CallToolResult::error(
-                            "Security error: Cannot overwrite symlink target".to_string(),
-                        ));
-                    }
-                    if sym_meta.file_type().is_hardlink() || sym_meta.is_hardlink() {
-                        return Ok(CallToolResult::error(
-                            "SafeFS Violation: Cannot overwrite hardlink target. Hardlinks are prohibited.".to_string(),
-                        ));
-                    }
-                }
-
-                if let Some(parent) = safe_path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
 
                 match fs::write(&safe_path, content) {
                     Ok(_) => Ok(CallToolResult::text(format!(
@@ -170,7 +153,7 @@ pub fn create_fs_list_tool(sandbox: SandboxPolicy) -> Box<dyn Tool> {
                             "Security error: Symlink access is prohibited".to_string(),
                         ));
                     }
-                    if sym_meta.file_type().is_hardlink() || sym_meta.is_hardlink() {
+                    if safe_path.is_hardlink() || sym_meta.is_hardlink() {
                         return Ok(CallToolResult::error(
                             "SafeFS Violation: Hardlink detected at target. Hardlinks are prohibited.".to_string(),
                         ));

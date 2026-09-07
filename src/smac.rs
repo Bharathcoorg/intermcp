@@ -32,27 +32,28 @@ pub struct SmacLogger {
 
 impl SmacLogger {
     pub fn new(path: &Path) -> Result<Self, FastMcpError> {
+        let (count, last_hash) = if path.exists() {
+            let metadata = std::fs::metadata(path).map_err(FastMcpError::Io)?;
+            if metadata.len() == 0 {
+                (0, GENESIS_HASH.to_string())
+            } else {
+                let (verified, final_hash) = verify_smac_log_chain(path).map_err(|e| {
+                    FastMcpError::SecurityViolation(format!(
+                        "SMAC log integrity check failed on startup: {}",
+                        e
+                    ))
+                })?;
+                (verified as u64, final_hash)
+            }
+        } else {
+            (0, GENESIS_HASH.to_string())
+        };
+
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .map_err(FastMcpError::Io)?;
-
-        let mut last_hash = GENESIS_HASH.to_string();
-        let mut count = 0;
-
-        if let Ok(existing) = File::open(path) {
-            let reader = BufReader::new(existing);
-            for line in reader.lines().map_while(Result::ok) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    if let Ok(entry) = serde_json::from_str::<SmacEntry>(trimmed) {
-                        last_hash = entry.hash;
-                        count = entry.index + 1;
-                    }
-                }
-            }
-        }
 
         Ok(Self {
             writer: Arc::new(RwLock::new(BufWriter::new(file))),
@@ -85,17 +86,18 @@ impl SmacLogger {
         format!("{:x}", hasher.finalize())
     }
 
-    pub fn record(&self, tool: &str, args: &Value, result: &Value) {
-        let index = self.counter.fetch_add(1, Ordering::SeqCst);
+    pub fn record(&self, tool: &str, args: &Value, result: &Value) -> Result<(), FastMcpError> {
+        let req_hash = Self::hash_value(args);
+        let resp_hash = Self::hash_value(result);
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let req_hash = Self::hash_value(args);
-        let resp_hash = Self::hash_value(result);
-
         let mut last_guard = self.last_hash.write();
+        let mut writer_guard = self.writer.write();
+
+        let index = self.counter.fetch_add(1, Ordering::SeqCst);
         let prev_hash = last_guard.clone();
         let entry_hash = Self::compute_entry_hash(&prev_hash, index, tool, &req_hash, &resp_hash);
 
@@ -111,15 +113,15 @@ impl SmacLogger {
 
         *last_guard = entry_hash;
 
-        if let Ok(serialized) = serde_json::to_string(&entry) {
-            let mut writer_guard = self.writer.write();
-            let _ = writeln!(writer_guard, "{}", serialized);
-            let _ = writer_guard.flush();
-        }
+        let serialized = serde_json::to_string(&entry).map_err(FastMcpError::Serialization)?;
+        writeln!(writer_guard, "{}", serialized).map_err(FastMcpError::Io)?;
+        writer_guard.flush().map_err(FastMcpError::Io)?;
+
+        Ok(())
     }
 }
 
-pub fn verify_smac_log(path: &Path) -> Result<usize, String> {
+pub fn verify_smac_log_chain(path: &Path) -> Result<(usize, String), String> {
     let file = File::open(path).map_err(|e| format!("Failed to open log: {}", e))?;
     let reader = BufReader::new(file);
 
@@ -168,5 +170,37 @@ pub fn verify_smac_log(path: &Path) -> Result<usize, String> {
         verified_count += 1;
     }
 
-    Ok(verified_count)
+    Ok((verified_count, prev_expected))
+}
+
+pub fn verify_smac_log(path: &Path) -> Result<usize, String> {
+    verify_smac_log_chain(path).map(|(count, _)| count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_new_refuses_corrupt_chain() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("corrupt_chain.log");
+        let mut f = File::create(&log_path).unwrap();
+        writeln!(f, "{{\"hash\":\"deadbeef\"}}").unwrap();
+        f.flush().unwrap();
+
+        let res = SmacLogger::new(&log_path);
+        assert!(
+            res.is_err(),
+            "SmacLogger::new must refuse to start on corrupt log"
+        );
+        match res {
+            Err(FastMcpError::SecurityViolation(msg)) => {
+                assert!(msg.contains("SMAC log integrity check failed"));
+            }
+            Err(e) => panic!("Expected SecurityViolation error, got other error: {}", e),
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    }
 }

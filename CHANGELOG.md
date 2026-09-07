@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-07
+
+### Security & Hardening Pass (Breaking Changes)
+- **CRYPTO-05 / CRITICAL**: `SmacLogger::new` verifies the complete cryptographic hash chain on startup via `verify_smac_log_chain`, refusing corrupt log files with `FastMcpError::SecurityViolation`.
+- **SBOX-08/09/10 / CRITICAL**: Hardened shell command validation against command chaining (`;`, `&`, `|`, `\n`), command substitution (`$()`, `` ` ``), variable expansion (`${}`), and tilde expansion; replaced tokenizer with `shell_words::split`; hardened `rm` flag filter against recursive deletion; enforced allowlist on resolved `$PATH` binaries.
+- **VAULT-01/02 / HIGH**: Replaced RwLock with Mutex in `TimeLockedVault`, enforced a strict `MAX_PENDING = 256` capacity ceiling to prevent memory exhaustion, and added an asynchronous background expiration cleanup task with a `CancellationToken` guard.
+- **HUB-01/02/03 / HIGH**: Added explicit `pass_env` opt-in filtering to `UpstreamServerConfig` (blocking dangerous environment variables); rejected TOFU (Trust-On-First-Use) auto-pinning in `SupplyChainFirewall` by requiring explicit expected schema/description hashes; implemented a 3-state circuit breaker (`Closed`, `Open`, `HalfOpen`) for upstream supervisors.
+- **HTTP-03 / MEDIUM**: Wrapped HTTP body-reading loop in a strict 30-second `tokio::time::timeout`, closing the socket and returning HTTP 408 on timeout to prevent Slowloris resource exhaustion.
+- **ASYNC-01 / MEDIUM**: Normalized `requestId` in `notifications/cancelled` to accept integer or string (converting integer via `to_string()`), returning JSON-RPC error `-32600` on invalid types.
+- **PROTO-01 / SPEC**: Implemented protocol version echo negotiation conforming to MCP 2024-11-05 spec using `SUPPORTED_PROTOCOL_VERSIONS`.
+- **FAKE-01/02/03 / HONESTY**: Explicitly relabeled Gravity DEX tools as `[DEMO ONLY]` placeholders with `"demoWarning"` in JSON output; clamped swap parameters to `[-1e12, 1e12]`; guarded reserve division against zero/negative denominators.
+- **FAKE-04 / HONESTY**: Replaced hardcoded memory claims in `doctor` and `bench` with live OS RSS measurement (`GetProcessMemoryInfo` on Windows, `/proc/self/statm` on Linux).
+- **PACKAGE-02/03/06 / PACKAGING**: Corrected `cargo-binstall` asset URL templates to match GitHub release binaries; cleaned crates.io keywords to standard 5-tag limit; removed unbuilt, unmaintained non-Rust bridge folders (`php/`, `python/`, `go/`, `package.json`, `index.js`, etc.) from git tracking.
+
 ## [0.2.2] - 2026-09-07
 
 ### Packaging & Crate Distribution

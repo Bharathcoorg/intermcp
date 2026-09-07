@@ -1,10 +1,11 @@
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::error::FastMcpError;
@@ -24,19 +25,54 @@ struct PendingEntry {
     sender: oneshot::Sender<bool>,
 }
 
+const MAX_PENDING: usize = 256;
+
+struct CleanupGuard {
+    token: CancellationToken,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        self.token.cancel();
+    }
+}
+
 #[derive(Clone)]
 pub struct TimeLockedVault {
     protected_tools: Vec<String>,
     window: Duration,
-    pending: Arc<RwLock<HashMap<String, PendingEntry>>>,
+    pending: Arc<Mutex<HashMap<String, PendingEntry>>>,
+    _cleanup_guard: Arc<CleanupGuard>,
 }
 
 impl TimeLockedVault {
     pub fn new(protected_tools: Vec<String>, window_secs: u64) -> Self {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let cancellation_token = CancellationToken::new();
+
+        let pending_bg = Arc::clone(&pending);
+        let cancel_bg = cancellation_token.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                tokio::select! {
+                    _ = cancel_bg.cancelled() => break,
+                    _ = interval.tick() => {
+                        let now = Instant::now();
+                        pending_bg.lock().retain(|_, e: &mut PendingEntry| e.expires_at > now);
+                    }
+                }
+            }
+        });
+
         Self {
             protected_tools,
             window: Duration::from_secs(window_secs),
-            pending: Arc::new(RwLock::new(HashMap::new())),
+            pending,
+            _cleanup_guard: Arc::new(CleanupGuard {
+                token: cancellation_token,
+            }),
         }
     }
 
@@ -55,6 +91,12 @@ impl TimeLockedVault {
             return Ok(true);
         }
 
+        if self.pending.lock().len() >= MAX_PENDING {
+            return Err(FastMcpError::SecurityViolation(
+                "Vault saturated; refusing new pending actions".into(),
+            ));
+        }
+
         let mut token_bytes = [0u8; 16];
         rand::Rng::fill(&mut rand::thread_rng(), &mut token_bytes);
         let id: String = token_bytes.iter().map(|b| format!("{:02x}", b)).collect();
@@ -63,7 +105,7 @@ impl TimeLockedVault {
         let (tx, rx) = oneshot::channel();
 
         {
-            let mut guard = self.pending.write();
+            let mut guard = self.pending.lock();
             guard.insert(
                 id.clone(),
                 PendingEntry {
@@ -84,7 +126,6 @@ impl TimeLockedVault {
 
         match tokio::time::timeout(self.window, rx).await {
             Ok(Ok(approved)) => {
-                self.pending.write().remove(&id);
                 if approved {
                     info!(
                         "✅ Tool '{}' [ID: {}] APPROVED by supervisor",
@@ -102,11 +143,11 @@ impl TimeLockedVault {
                 }
             }
             Ok(Err(_)) => {
-                self.pending.write().remove(&id);
+                self.pending.lock().remove(&id);
                 Ok(false)
             }
             Err(_) => {
-                self.pending.write().remove(&id);
+                self.pending.lock().remove(&id);
                 warn!(
                     "⌛ Tool '{}' [ID: {}] TIMED OUT after {}s without approval",
                     crate::server::redact_for_log(tool_name),
@@ -119,8 +160,11 @@ impl TimeLockedVault {
     }
 
     pub fn approve(&self, id: &str) -> bool {
-        if let Some(entry) = self.pending.write().remove(id) {
-            let _ = entry.sender.send(true);
+        let mut guard = self.pending.lock();
+        if let Some(entry) = guard.remove(id) {
+            if entry.sender.send(true).is_err() {
+                warn!("Vault approve: receiver dropped for ID '{}'", id);
+            }
             true
         } else {
             false
@@ -128,8 +172,11 @@ impl TimeLockedVault {
     }
 
     pub fn reject(&self, id: &str) -> bool {
-        if let Some(entry) = self.pending.write().remove(id) {
-            let _ = entry.sender.send(false);
+        let mut guard = self.pending.lock();
+        if let Some(entry) = guard.remove(id) {
+            if entry.sender.send(false).is_err() {
+                warn!("Vault reject: receiver dropped for ID '{}'", id);
+            }
             true
         } else {
             false
@@ -138,7 +185,7 @@ impl TimeLockedVault {
 
     pub fn list_pending(&self) -> Vec<PendingActionSummary> {
         let now = Instant::now();
-        let guard = self.pending.read();
+        let guard = self.pending.lock();
         guard
             .iter()
             .filter(|(_, entry)| entry.expires_at > now)
@@ -149,5 +196,92 @@ impl TimeLockedVault {
                 remaining_secs: entry.expires_at.duration_since(now).as_secs(),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_vault_idempotent_approve() {
+        let vault = TimeLockedVault::new(vec!["high_risk".into()], 30);
+        let vault_clone = vault.clone();
+
+        let handle = tokio::spawn(async move {
+            vault_clone
+                .check_or_wait("high_risk", &serde_json::json!({}))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let pending = vault.list_pending();
+        assert_eq!(pending.len(), 1);
+        let id = &pending[0].id;
+
+        assert!(vault.approve(id));
+        assert!(!vault.approve(id));
+
+        let res = handle.await.unwrap();
+        assert!(res.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_vault_pending_cap_saturation() {
+        let vault = TimeLockedVault::new(vec!["high_risk".into()], 30);
+
+        {
+            let mut guard = vault.pending.lock();
+            for i in 0..MAX_PENDING {
+                let (tx, _rx) = oneshot::channel();
+                guard.insert(
+                    format!("pending-{}", i),
+                    PendingEntry {
+                        tool: "high_risk".to_string(),
+                        arguments: serde_json::json!({}),
+                        expires_at: Instant::now() + Duration::from_secs(60),
+                        sender: tx,
+                    },
+                );
+            }
+        }
+
+        let res = vault
+            .check_or_wait("high_risk", &serde_json::json!({}))
+            .await;
+        assert!(res.is_err());
+        match res {
+            Err(FastMcpError::SecurityViolation(msg)) => {
+                assert!(msg.contains("Vault saturated; refusing new pending actions"));
+            }
+            _ => panic!("Expected SecurityViolation on saturation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vault_expired_entry_cleaned_up() {
+        let vault = TimeLockedVault::new(vec!["high_risk".into()], 30);
+
+        {
+            let (tx, _rx) = oneshot::channel();
+            vault.pending.lock().insert(
+                "expired-id".to_string(),
+                PendingEntry {
+                    tool: "high_risk".to_string(),
+                    arguments: serde_json::json!({}),
+                    expires_at: Instant::now() - Duration::from_secs(5),
+                    sender: tx,
+                },
+            );
+        }
+
+        assert_eq!(vault.list_pending().len(), 0);
+
+        vault
+            .pending
+            .lock()
+            .retain(|_, e| e.expires_at > Instant::now());
+        assert_eq!(vault.pending.lock().len(), 0);
     }
 }

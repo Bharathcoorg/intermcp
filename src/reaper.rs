@@ -61,12 +61,16 @@ pub mod windows {
         handle: RawHandle,
     }
 
+    // SAFETY: ProcessJobGroup holds an owned Win32 HANDLE; all access is serialized by being stored in a value that is only mutated via `&mut self` methods
     unsafe impl Send for ProcessJobGroup {}
+    // SAFETY: ProcessJobGroup holds an owned Win32 HANDLE; all access is serialized by being stored in a value that is only mutated via `&mut self` methods
     unsafe impl Sync for ProcessJobGroup {}
 
     impl ProcessJobGroup {
         /// Creates a new Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
         pub fn new() -> Option<Self> {
+            // # Safety
+            // Calls Win32 CreateJobObjectW and SetInformationJobObject with valid pointers and struct sizes.
             unsafe {
                 let handle = CreateJobObjectW(null_mut(), null_mut());
                 if handle.is_null() || handle == -1isize as RawHandle {
@@ -103,6 +107,8 @@ pub mod windows {
 
     impl Drop for ProcessJobGroup {
         fn drop(&mut self) {
+            // # Safety
+            // Closes owned Win32 handle if valid.
             unsafe {
                 if !self.handle.is_null() && self.handle != -1isize as RawHandle {
                     CloseHandle(self.handle);
@@ -117,10 +123,13 @@ pub fn configure_child_isolation(cmd: &mut tokio::process::Command) {
     cmd.kill_on_drop(true);
 
     #[cfg(unix)]
+    // # Safety
+    // pre_exec runs in the forked child process before exec. setpgid, prctl, and signal are async-signal-safe syscalls.
     unsafe {
         cmd.pre_exec(|| {
             // Set new process group on POSIX so killpg kills all children
             let _ = libc::setpgid(0, 0);
+            let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
             let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
             let _ = libc::signal(libc::SIGTTIN, libc::SIG_IGN);
             let _ = libc::signal(libc::SIGTSTP, libc::SIG_IGN);
@@ -148,19 +157,24 @@ impl ChildIsolationGuard {
             let job = match windows::ProcessJobGroup::new() {
                 Some(j) => j,
                 None => {
-                    tracing::warn!("Failed to create Windows Job Object for process isolation; falling back to kill_on_drop");
-                    return Ok(Self { job: None });
+                    return Err(FastMcpError::Internal(
+                        "Failed to create Windows Job Object for process isolation".into(),
+                    ));
                 }
             };
             if let Some(handle) = child.raw_handle() {
+                // # Safety
+                // handle is a valid process handle borrowed from child.
                 let assigned = unsafe { job.assign(handle) };
                 if !assigned {
-                    tracing::warn!("Failed to assign child process to Windows Job Object; falling back to kill_on_drop");
-                    return Ok(Self { job: None });
+                    return Err(FastMcpError::Internal(
+                        "Failed to assign child process to Windows Job Object".into(),
+                    ));
                 }
             } else {
-                tracing::warn!("Missing child process raw handle for Windows Job Object isolation; falling back to kill_on_drop");
-                return Ok(Self { job: None });
+                return Err(FastMcpError::Internal(
+                    "Missing child process raw handle for Windows Job Object isolation".into(),
+                ));
             }
             Ok(Self { job: Some(job) })
         }
@@ -175,8 +189,12 @@ impl ChildIsolationGuard {
         #[cfg(unix)]
         {
             if let Some(pid) = self.pgid {
-                unsafe {
-                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                // # Safety
+                // killpg sends SIGKILL to the process group associated with pid.
+                let ret = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+                if ret != 0 {
+                    let err = std::io::Error::last_os_error();
+                    tracing::warn!("killpg failed for process group {}: {}", pid, err);
                 }
             }
         }

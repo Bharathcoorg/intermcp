@@ -220,10 +220,6 @@ impl ReceiptBook {
 
         let line = serde_json::to_string(&signed).map_err(FastMcpError::Serialization)?;
 
-        static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let count = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let random_suffix: u128 = rand::random();
-
         let parent = guard
             .file_path
             .parent()
@@ -237,38 +233,13 @@ impl ReceiptBook {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let temp_name = format!(
-            ".receipt_tmp_{}_{}_{}_{:032x}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            count,
-            random_suffix
-        );
-        let temp_path = parent.join(temp_name);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&guard.file_path)?;
 
-        {
-            let mut temp_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&temp_path)?;
-
-            if guard.file_path.exists() {
-                let mut orig_file = File::open(&guard.file_path)?;
-                std::io::copy(&mut orig_file, &mut temp_file)?;
-            }
-
-            writeln!(temp_file, "{}", line)?;
-            temp_file.sync_all()?;
-        }
-
-        std::fs::rename(&temp_path, &guard.file_path).map_err(|e| {
-            let _ = std::fs::remove_file(&temp_path);
-            FastMcpError::Io(e)
-        })?;
+        writeln!(file, "{}", line)?;
+        file.sync_all()?;
 
         guard.prev_hash = signed.receipt_hash.clone();
         guard.sequence += 1;

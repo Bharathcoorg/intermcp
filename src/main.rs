@@ -703,7 +703,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "✅ Protocol Dispatch Health: {:.2} µs average latency",
                 avg_micros
             );
-            println!("✅ Memory Footprint: < 3.8 MB RSS (Pure Native Thread)");
+            println!(
+                "✅ Memory Footprint: {} (Native Process)",
+                format_rss_footprint()
+            );
             println!("✅ SafeFS Sandbox Engine: Online and active");
             println!("✅ Micro-Cache Engine: Online (TTL enabled)");
             println!("✅ Autonomous Loop Breaker Guardrails: Online");
@@ -794,8 +797,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "│ Micro-Cache Hits / Misses   │ {} hits / {} miss │",
                 hits, misses
             );
+            let rss_str = format_rss_footprint();
             println!("│ Active Cache Entries        │ {:<16} │", entries);
-            println!("│ Memory Footprint (RSS)      │ < 3.8 MB         │");
+            println!("│ Memory Footprint (RSS)      │ {:<16} │", rss_str);
             println!("└─────────────────────────────┴──────────────────┘\n");
             println!("🚀 Compared to Node.js / Python Reference MCP:");
             println!(
@@ -803,7 +807,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 avg_micros,
                 (45000.0 / avg_micros.max(0.1)) as u64
             );
-            println!("   • InterMCP Memory:  3.8 MB (vs ~160 MB on Node.js)     -> ~40x lighter\n");
+            println!(
+                "   • InterMCP Memory:  {} (vs ~160 MB on Node.js)\n",
+                rss_str
+            );
         }
     }
 
@@ -847,5 +854,69 @@ fn get_cursor_config_path() -> PathBuf {
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         PathBuf::from(home).join(".cursor").join("mcp.json")
+    }
+}
+
+fn get_current_rss_bytes() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut pmc = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        let handle = unsafe { GetCurrentProcess() };
+        let ok = unsafe { GetProcessMemoryInfo(handle, &mut pmc, pmc.cb) };
+        if ok.is_ok() {
+            Some(pmc.WorkingSetSize as u64)
+        } else {
+            None
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+            let mut parts = statm.split_whitespace();
+            let _size = parts.next();
+            if let Some(resident) = parts.next() {
+                if let Ok(pages) = resident.parse::<u64>() {
+                    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+                    return Some(pages * page_size);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        None
+    }
+}
+
+fn format_rss_footprint() -> String {
+    match get_current_rss_bytes() {
+        Some(bytes) => {
+            let mb = bytes as f64 / (1024.0 * 1024.0);
+            format!("{:.2} MB", mb)
+        }
+        None => "N/A".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_rss_footprint_non_empty() {
+        let footprint = format_rss_footprint();
+        assert!(!footprint.is_empty());
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            assert!(footprint.ends_with(" MB"));
+        }
     }
 }

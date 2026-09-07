@@ -110,7 +110,7 @@ fn load_tls_acceptor(
     let key = PrivateKeyDer::from_pem_file(key_path)?;
 
     let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()?
     .with_no_client_auth()
@@ -119,12 +119,59 @@ fn load_tls_acceptor(
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server_config)))
 }
 
-static IP_RATE_LIMITS: OnceLock<RwLock<HashMap<IpAddr, (Instant, u32)>>> = OnceLock::new();
-type SseSender = tokio::sync::mpsc::Sender<String>;
-static SSE_SESSIONS: OnceLock<RwLock<HashMap<String, SseSender>>> = OnceLock::new();
+use governor::clock::DefaultClock;
+use governor::state::keyed::DefaultKeyedStateStore;
+use governor::{Quota, RateLimiter};
+use std::num::NonZeroU32;
 
-fn get_sse_sessions() -> &'static RwLock<HashMap<String, SseSender>> {
-    SSE_SESSIONS.get_or_init(|| RwLock::new(HashMap::new()))
+type IpRateLimiter = RateLimiter<IpAddr, DefaultKeyedStateStore<IpAddr>, DefaultClock>;
+static IP_RATE_LIMITER: OnceLock<IpRateLimiter> = OnceLock::new();
+
+fn check_ip_rate_limit(ip: IpAddr) -> bool {
+    let limiter = IP_RATE_LIMITER
+        .get_or_init(|| RateLimiter::keyed(Quota::per_minute(NonZeroU32::new(60).unwrap())));
+    limiter.check_key(&ip).is_ok()
+}
+
+type SseSender = tokio::sync::mpsc::Sender<String>;
+
+pub(crate) struct SseState {
+    pub sessions: HashMap<String, SseSender>,
+    pub ip_connections: HashMap<IpAddr, (Instant, u32)>,
+}
+
+impl SseState {
+    pub fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            ip_connections: HashMap::new(),
+        }
+    }
+
+    /// Refuse 4th SSE from same IP within 60s
+    pub fn check_and_record_sse_ip(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        // Evict expired entries if table grows
+        if self.ip_connections.len() > 500 {
+            self.ip_connections
+                .retain(|_, (ts, _)| now.duration_since(*ts) < Duration::from_secs(60));
+        }
+
+        let entry = self.ip_connections.entry(ip).or_insert((now, 0));
+        if now.duration_since(entry.0) > Duration::from_secs(60) {
+            *entry = (now, 1);
+            true
+        } else {
+            entry.1 += 1;
+            entry.1 <= 3
+        }
+    }
+}
+
+static SSE_SESSIONS: OnceLock<RwLock<SseState>> = OnceLock::new();
+
+fn get_sse_sessions() -> &'static RwLock<SseState> {
+    SSE_SESSIONS.get_or_init(|| RwLock::new(SseState::new()))
 }
 
 fn generate_session_id() -> String {
@@ -145,30 +192,6 @@ fn is_valid_session_id(sid: &str) -> bool {
 }
 
 const MAX_SSE_SESSIONS: usize = 1024;
-
-static RATE_LIMIT_PRUNE_COUNTER: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-fn check_ip_rate_limit(ip: IpAddr) -> bool {
-    let limits = IP_RATE_LIMITS.get_or_init(|| RwLock::new(HashMap::new()));
-    let now = Instant::now();
-    let mut guard = limits.write();
-
-    // Periodic pruning: every 500 requests, evict entries older than 5 minutes
-    let count = RATE_LIMIT_PRUNE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if count % 500 == 0 {
-        guard.retain(|_, (ts, _)| now.duration_since(*ts) < Duration::from_secs(300));
-    }
-
-    let entry = guard.entry(ip).or_insert((now, 0));
-    if now.duration_since(entry.0) > Duration::from_secs(60) {
-        *entry = (now, 1);
-        true
-    } else {
-        entry.1 += 1;
-        entry.1 <= 60
-    }
-}
 
 pub async fn run_http_server(
     server: Arc<Server>,
@@ -217,6 +240,11 @@ pub async fn run_http_server(
         let permit = match connection_semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
+                tracing::warn!(
+                    "Connection rejected from {}: max connections limit reached ({})",
+                    crate::server::redact_for_log(&peer_addr.to_string()),
+                    max_conns
+                );
                 let mut socket = raw_socket;
                 let resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 28\r\nConnection: close\r\n\r\nMax connections limit reached";
                 let _ = socket.write_all(resp.as_bytes()).await;
@@ -225,6 +253,10 @@ pub async fn run_http_server(
         };
 
         if !check_ip_rate_limit(peer_addr.ip()) {
+            tracing::warn!(
+                "Connection rejected from {}: IP rate limit exceeded (60/m)",
+                crate::server::redact_for_log(&peer_addr.to_string())
+            );
             let mut socket = raw_socket;
             let resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nRate limit exceeded (60/m)";
             let _ = socket.write_all(resp.as_bytes()).await;
@@ -244,7 +276,7 @@ pub async fn run_http_server(
                     Err(e) => {
                         tracing::warn!(
                             "TLS handshake failed from {}: {}",
-                            peer_addr,
+                            crate::server::redact_for_log(&peer_addr.to_string()),
                             crate::server::redact_for_log(&e.to_string())
                         );
                         return;
@@ -267,6 +299,10 @@ pub async fn run_http_server(
                     buffer.extend_from_slice(&temp_buf[..n]);
 
                     if buffer.len() > 32 * 1024 {
+                        tracing::warn!(
+                            "Request headers exceed 32KB limit from {}",
+                            crate::server::redact_for_log(&peer_addr.to_string())
+                        );
                         let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 27\r\nConnection: close\r\n\r\nHeaders exceed 32KB limit";
                         let _ = socket.write_all(resp.as_bytes()).await;
                         return;
@@ -287,6 +323,11 @@ pub async fn run_http_server(
                 let first_line = lines[0];
                 let parts: Vec<&str> = first_line.split_whitespace().collect();
                 if parts.len() < 3 {
+                    tracing::warn!(
+                        "Malformed HTTP request line from {}: '{}'",
+                        crate::server::redact_for_log(&peer_addr.to_string()),
+                        crate::server::redact_for_log(first_line)
+                    );
                     return;
                 }
 
@@ -298,6 +339,8 @@ pub async fn run_http_server(
                 let mut has_host = false;
                 let mut is_sse_accept = false;
                 let mut authorization_header = None;
+                let mut content_type_header = None;
+                let mut origin_header = None;
                 let mut content_length: Option<usize> = None;
                 let mut bad_content_length = false;
                 let mut has_transfer_encoding_chunked = false;
@@ -312,6 +355,10 @@ pub async fn run_http_server(
                         authorization_header = Some(line[22..].trim().to_string());
                     } else if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
                         has_transfer_encoding_chunked = true;
+                    } else if lower.starts_with("content-type:") {
+                        content_type_header = Some(line[13..].trim().to_string());
+                    } else if lower.starts_with("origin:") {
+                        origin_header = Some(line[7..].trim().to_string());
                     } else if lower.starts_with("content-length:") {
                         let val_str = line[15..].trim();
                         if let Ok(len) = val_str.parse::<usize>() {
@@ -329,6 +376,10 @@ pub async fn run_http_server(
                 }
 
                 if bad_content_length {
+                    tracing::warn!(
+                        "Conflicting or invalid Content-Length header from {}",
+                        crate::server::redact_for_log(&peer_addr.to_string())
+                    );
                     let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 30\r\nConnection: close\r\n\r\nConflicting Content-Length";
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
@@ -336,6 +387,10 @@ pub async fn run_http_server(
 
                 // Finding 4 / AUDIT-04: Reject Transfer-Encoding requests with 400 Bad Request
                 if has_transfer_encoding_chunked {
+                    tracing::warn!(
+                        "Transfer-Encoding chunked rejected from {}",
+                        crate::server::redact_for_log(&peer_addr.to_string())
+                    );
                     let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 38\r\nConnection: close\r\n\r\nTransfer-Encoding is not supported";
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
@@ -344,6 +399,10 @@ pub async fn run_http_server(
                 let content_length = content_length.unwrap_or(0);
 
                 if http_version == "HTTP/1.1" && !has_host {
+                    tracing::warn!(
+                        "Missing Host header in HTTP/1.1 request from {}",
+                        crate::server::redact_for_log(&peer_addr.to_string())
+                    );
                     let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 20\r\nConnection: close\r\n\r\nMissing Host header";
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
@@ -358,6 +417,11 @@ pub async fn run_http_server(
 
                     let is_public_get = method == "GET" && path == "/health";
                     if !authorized && !is_public_get {
+                        tracing::warn!(
+                            "Unauthorized HTTP request to {} from {}",
+                            crate::server::redact_for_log(path),
+                            crate::server::redact_for_log(&peer_addr.to_string())
+                        );
                         let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
                         let _ = socket.write_all(resp.as_bytes()).await;
                         return;
@@ -365,21 +429,48 @@ pub async fn run_http_server(
                 }
 
                 if content_length > 10 * 1024 * 1024 {
+                    tracing::warn!(
+                        "Payload exceeds 10MB limit ({} bytes) from {}",
+                        content_length,
+                        crate::server::redact_for_log(&peer_addr.to_string())
+                    );
                     let resp = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 20\r\nConnection: close\r\n\r\nPayload exceeds 10MB";
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
                 }
 
-                while buffer.len() - header_end < content_length {
-                    let n = match socket.read(&mut temp_buf).await {
-                        Ok(n) if n > 0 => n,
-                        _ => {
-                            let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 28\r\nConnection: close\r\n\r\nIncomplete request payload";
-                            let _ = socket.write_all(resp.as_bytes()).await;
-                            return;
-                        }
-                    };
-                    buffer.extend_from_slice(&temp_buf[..n]);
+                let body_read_res = tokio::time::timeout(Duration::from_secs(30), async {
+                    while buffer.len() - header_end < content_length {
+                        let n = match socket.read(&mut temp_buf).await {
+                            Ok(n) if n > 0 => n,
+                            _ => return Err(()),
+                        };
+                        buffer.extend_from_slice(&temp_buf[..n]);
+                    }
+                    Ok(())
+                })
+                .await;
+
+                match body_read_res {
+                    Ok(Ok(())) => {}
+                    Ok(Err(())) => {
+                        tracing::warn!(
+                            "Incomplete request payload from {}",
+                            crate::server::redact_for_log(&peer_addr.to_string())
+                        );
+                        let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 28\r\nConnection: close\r\n\r\nIncomplete request payload";
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Request body read timed out after 30s from {}",
+                            crate::server::redact_for_log(&peer_addr.to_string())
+                        );
+                        let resp = "HTTP/1.1 408 Request Timeout\r\nContent-Length: 15\r\nConnection: close\r\n\r\nRequest Timeout";
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return;
+                    }
                 }
 
                 let cors_header = match &cors_ref {
@@ -422,22 +513,54 @@ pub async fn run_http_server(
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                 } else if method == "GET" && path == "/sse" && is_sse_accept {
-                    // AUDIT-03: Enforce maximum SSE session count
-                    if get_sse_sessions().read().len() >= MAX_SSE_SESSIONS {
-                        let resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 31\r\nConnection: close\r\n\r\nMaximum SSE sessions reached";
-                        let _ = socket.write_all(resp.as_bytes()).await;
+                    let (refusal, session_id, sse_rx) = {
+                        let mut sse_guard = get_sse_sessions().write();
+                        if sse_guard.sessions.len() >= MAX_SSE_SESSIONS {
+                            (Some((503, "Maximum SSE sessions reached")), None, None)
+                        } else if !sse_guard.check_and_record_sse_ip(peer_addr.ip()) {
+                            (Some((429, "Too many SSE sessions for this IP")), None, None)
+                        } else {
+                            let sid = generate_session_id();
+                            let (tx, rx) = tokio::sync::mpsc::channel(64);
+                            sse_guard.sessions.insert(sid.clone(), tx);
+                            (None, Some(sid), Some(rx))
+                        }
+                    };
+
+                    if let Some((code, msg)) = refusal {
+                        if code == 503 {
+                            tracing::warn!(
+                                "Maximum SSE sessions reached ({}) when connection attempted from {}",
+                                MAX_SSE_SESSIONS,
+                                crate::server::redact_for_log(&peer_addr.to_string())
+                            );
+                            let resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 31\r\nConnection: close\r\n\r\nMaximum SSE sessions reached";
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                        } else {
+                            tracing::warn!(
+                                "Per-IP SSE connection cap reached: refusing 4th connection within 60s from {}",
+                                crate::server::redact_for_log(&peer_addr.to_string())
+                            );
+                            let resp = format!(
+                                "HTTP/1.1 429 Too Many Requests\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                cors_header,
+                                msg.len(),
+                                msg
+                            );
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                        }
                         return;
                     }
-                    let session_id = generate_session_id();
-                    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-                    get_sse_sessions().write().insert(session_id.clone(), tx);
+
+                    let session_id = session_id.unwrap();
+                    let mut rx = sse_rx.unwrap();
 
                     let sse_init = format!(
                         "HTTP/1.1 200 OK\r\n{}Content-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
                         cors_header
                     );
                     if socket.write_all(sse_init.as_bytes()).await.is_err() {
-                        get_sse_sessions().write().remove(&session_id);
+                        get_sse_sessions().write().sessions.remove(&session_id);
                         return;
                     }
 
@@ -447,7 +570,7 @@ pub async fn run_http_server(
                         session_id
                     );
                     if socket.write_all(endpoint_event.as_bytes()).await.is_err() {
-                        get_sse_sessions().write().remove(&session_id);
+                        get_sse_sessions().write().sessions.remove(&session_id);
                         return;
                     }
                     let _ = socket.flush().await;
@@ -484,7 +607,7 @@ pub async fn run_http_server(
                             }
                         }
                     }
-                    get_sse_sessions().write().remove(&session_id);
+                    get_sse_sessions().write().sessions.remove(&session_id);
                 } else if method == "POST"
                     && (path == "/message" || raw_path.starts_with("/message?"))
                 {
@@ -499,7 +622,7 @@ pub async fn run_http_server(
 
                     if let Some(raw_sid) = raw_session_id {
                         if is_valid_session_id(raw_sid) {
-                            let sse_tx = get_sse_sessions().read().get(raw_sid).cloned();
+                            let sse_tx = get_sse_sessions().read().sessions.get(raw_sid).cloned();
                             if let Some(tx) = sse_tx {
                                 if let Some(resp_json) =
                                     server_ref.handle_raw_message(&body_str).await
@@ -515,6 +638,10 @@ pub async fn run_http_server(
                                 return;
                             }
                         }
+                        tracing::warn!(
+                            "SSE message dispatch failed: session ID not found '{}'",
+                            crate::server::redact_for_log(raw_sid)
+                        );
                         let response = format!(
                             "HTTP/1.1 404 Not Found\r\n{}Content-Type: text/plain\r\nContent-Length: 20\r\nConnection: close\r\n\r\nSession ID not found",
                             cors_header
@@ -566,19 +693,26 @@ pub async fn run_http_server(
                             false
                         };
                         if !authorized {
+                            tracing::warn!(
+                                "Unauthorized /api/pending request from {}",
+                                crate::server::redact_for_log(&peer_addr.to_string())
+                            );
                             let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
                             let _ = socket.write_all(resp.as_bytes()).await;
                             return;
                         }
                     }
 
-                    let pending = server_ref
-                        .vault_lock()
-                        .map(|v| v.list_pending())
-                        .unwrap_or_default();
-                    let json_str = serde_json::to_string(&pending).unwrap_or_else(|_| "[]".into());
+                    let json_str = match server_ref.vault_lock() {
+                        Some(v) => {
+                            let pending = v.list_pending();
+                            serde_json::to_string(&pending)
+                                .unwrap_or_else(|_| "{\"pending\":[]}".into())
+                        }
+                        None => "{\"pending\":[]}".into(),
+                    };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         cors_header,
                         json_str.len(),
                         json_str
@@ -592,6 +726,11 @@ pub async fn run_http_server(
                             false
                         };
                         if !authorized {
+                            tracing::warn!(
+                                "Unauthorized approve request on {} from {}",
+                                crate::server::redact_for_log(path),
+                                crate::server::redact_for_log(&peer_addr.to_string())
+                            );
                             let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
                             let _ = socket.write_all(resp.as_bytes()).await;
                             return;
@@ -599,6 +738,11 @@ pub async fn run_http_server(
                     }
 
                     if method != "POST" {
+                        tracing::warn!(
+                            "Method {} not allowed on {}",
+                            crate::server::redact_for_log(method),
+                            crate::server::redact_for_log(path)
+                        );
                         let resp = format!(
                             "HTTP/1.1 405 Method Not Allowed\r\n{}Allow: POST\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nMethod Not Allowed",
                             cors_header
@@ -607,11 +751,55 @@ pub async fn run_http_server(
                         return;
                     }
 
+                    if let Some(expected_origin) = &cors_ref {
+                        if let Some(req_origin) = &origin_header {
+                            if req_origin != expected_origin {
+                                tracing::warn!(
+                                    "Origin mismatch on {}: received '{}', expected '{}'",
+                                    crate::server::redact_for_log(path),
+                                    crate::server::redact_for_log(req_origin),
+                                    crate::server::redact_for_log(expected_origin)
+                                );
+                                let resp = format!(
+                                    "HTTP/1.1 403 Forbidden\r\n{}Content-Type: text/plain\r\nContent-Length: 16\r\nConnection: close\r\n\r\nOrigin Forbidden",
+                                    cors_header
+                                );
+                                let _ = socket.write_all(resp.as_bytes()).await;
+                                return;
+                            }
+                        }
+                    }
+
+                    if content_length > 0 {
+                        let is_json = content_type_header
+                            .as_deref()
+                            .map(|ct| ct.to_lowercase().starts_with("application/json"))
+                            .unwrap_or(false);
+                        if !is_json {
+                            tracing::warn!(
+                                "Invalid Content-Type on {}: expected application/json or empty body",
+                                crate::server::redact_for_log(path)
+                            );
+                            let resp = format!(
+                                "HTTP/1.1 415 Unsupported Media Type\r\n{}Content-Type: text/plain\r\nContent-Length: 32\r\nConnection: close\r\n\r\nContent-Type must be application/json",
+                                cors_header
+                            );
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                            return;
+                        }
+                    }
+
                     let id = path.rsplit('/').next().unwrap_or("");
                     let approved = server_ref
                         .vault_lock()
                         .map(|v| v.approve(id))
                         .unwrap_or(false);
+                    if !approved {
+                        tracing::warn!(
+                            "Approval action failed or expired for id '{}'",
+                            crate::server::redact_for_log(id)
+                        );
+                    }
                     let status = if approved {
                         "{\"success\":true,\"action\":\"approved\"}"
                     } else {
@@ -632,6 +820,11 @@ pub async fn run_http_server(
                             false
                         };
                         if !authorized {
+                            tracing::warn!(
+                                "Unauthorized reject request on {} from {}",
+                                crate::server::redact_for_log(path),
+                                crate::server::redact_for_log(&peer_addr.to_string())
+                            );
                             let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: close\r\n\r\nInvalid or missing Bearer";
                             let _ = socket.write_all(resp.as_bytes()).await;
                             return;
@@ -639,6 +832,11 @@ pub async fn run_http_server(
                     }
 
                     if method != "POST" {
+                        tracing::warn!(
+                            "Method {} not allowed on {}",
+                            crate::server::redact_for_log(method),
+                            crate::server::redact_for_log(path)
+                        );
                         let resp = format!(
                             "HTTP/1.1 405 Method Not Allowed\r\n{}Allow: POST\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nMethod Not Allowed",
                             cors_header
@@ -647,11 +845,55 @@ pub async fn run_http_server(
                         return;
                     }
 
+                    if let Some(expected_origin) = &cors_ref {
+                        if let Some(req_origin) = &origin_header {
+                            if req_origin != expected_origin {
+                                tracing::warn!(
+                                    "Origin mismatch on {}: received '{}', expected '{}'",
+                                    crate::server::redact_for_log(path),
+                                    crate::server::redact_for_log(req_origin),
+                                    crate::server::redact_for_log(expected_origin)
+                                );
+                                let resp = format!(
+                                    "HTTP/1.1 403 Forbidden\r\n{}Content-Type: text/plain\r\nContent-Length: 16\r\nConnection: close\r\n\r\nOrigin Forbidden",
+                                    cors_header
+                                );
+                                let _ = socket.write_all(resp.as_bytes()).await;
+                                return;
+                            }
+                        }
+                    }
+
+                    if content_length > 0 {
+                        let is_json = content_type_header
+                            .as_deref()
+                            .map(|ct| ct.to_lowercase().starts_with("application/json"))
+                            .unwrap_or(false);
+                        if !is_json {
+                            tracing::warn!(
+                                "Invalid Content-Type on {}: expected application/json or empty body",
+                                crate::server::redact_for_log(path)
+                            );
+                            let resp = format!(
+                                "HTTP/1.1 415 Unsupported Media Type\r\n{}Content-Type: text/plain\r\nContent-Length: 32\r\nConnection: close\r\n\r\nContent-Type must be application/json",
+                                cors_header
+                            );
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                            return;
+                        }
+                    }
+
                     let id = path.rsplit('/').next().unwrap_or("");
                     let rejected = server_ref
                         .vault_lock()
                         .map(|v| v.reject(id))
                         .unwrap_or(false);
+                    if !rejected {
+                        tracing::warn!(
+                            "Reject action failed or expired for id '{}'",
+                            crate::server::redact_for_log(id)
+                        );
+                    }
                     let status = if rejected {
                         "{\"success\":true,\"action\":\"rejected\"}"
                     } else {
@@ -665,6 +907,12 @@ pub async fn run_http_server(
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                 } else {
+                    tracing::warn!(
+                        "HTTP 404 for {} {} from {}",
+                        crate::server::redact_for_log(method),
+                        crate::server::redact_for_log(raw_path),
+                        crate::server::redact_for_log(&peer_addr.to_string())
+                    );
                     let not_found = "404 Not Found";
                     let response = format!(
                         "HTTP/1.1 404 Not Found\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",

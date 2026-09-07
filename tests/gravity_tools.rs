@@ -12,6 +12,9 @@ async fn test_gravity_plugin_toolset_loading() {
     assert_eq!(tools[0].name(), "gravity_get_market_price");
     assert_eq!(tools[1].name(), "gravity_get_liquidity_pools");
     assert_eq!(tools[2].name(), "gravity_simulate_swap");
+    for t in &tools {
+        assert!(t.description().starts_with("[DEMO ONLY]"));
+    }
 
     let interlayer_tools = plugin_toolset("interlayer");
     assert_eq!(interlayer_tools.len(), 3);
@@ -24,6 +27,7 @@ async fn test_gravity_plugin_toolset_loading() {
 async fn test_gravity_market_price_tool() {
     let tool = create_gravity_market_price_tool();
     assert_eq!(tool.name(), "gravity_get_market_price");
+    assert!(tool.description().starts_with("[DEMO ONLY]"));
 
     // Test GRAV/USDC
     let res = tool
@@ -33,7 +37,11 @@ async fn test_gravity_market_price_tool() {
     assert!(!res.is_error);
 
     if let ContentItem::Text { text } = &res.content[0] {
-        let parsed: Value = serde_json::from_str(text).expect("Valid JSON");
+        assert!(text.starts_with(
+            "⚠️  DEMO PLACEHOLDER — values are hardcoded, do NOT use for trading decisions."
+        ));
+        let json_part = text.split_once('\n').map(|(_, r)| r).unwrap_or(text);
+        let parsed: Value = serde_json::from_str(json_part).expect("Valid JSON");
         assert_eq!(parsed["pair"], "GRAV/USDC");
         assert_eq!(parsed["priceUsd"], 4.85);
         assert_eq!(parsed["dex"], "Gravity DEX Superchain Terminal");
@@ -47,7 +55,11 @@ async fn test_gravity_market_price_tool() {
         .await
         .expect("ETH price failed");
     if let ContentItem::Text { text } = &res_eth.content[0] {
-        let parsed: Value = serde_json::from_str(text).expect("Valid JSON");
+        assert!(text.starts_with(
+            "⚠️  DEMO PLACEHOLDER — values are hardcoded, do NOT use for trading decisions."
+        ));
+        let json_part = text.split_once('\n').map(|(_, r)| r).unwrap_or(text);
+        let parsed: Value = serde_json::from_str(json_part).expect("Valid JSON");
         assert_eq!(parsed["priceUsd"], 3420.50);
     }
 }
@@ -56,18 +68,27 @@ async fn test_gravity_market_price_tool() {
 async fn test_gravity_pools_tool_filtering() {
     let tool = create_gravity_pools_tool();
     assert_eq!(tool.name(), "gravity_get_liquidity_pools");
+    assert!(tool.description().starts_with("[DEMO ONLY]"));
 
     // Test filter "all"
     let res_all = tool.execute(json!({ "filter_vm": "all" })).await.unwrap();
     if let ContentItem::Text { text } = &res_all.content[0] {
-        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert!(text.starts_with(
+            "⚠️  DEMO PLACEHOLDER — values are hardcoded, do NOT use for trading decisions."
+        ));
+        let json_part = text.split_once('\n').map(|(_, r)| r).unwrap_or(text);
+        let parsed: Value = serde_json::from_str(json_part).unwrap();
         assert_eq!(parsed["totalPools"], 3);
     }
 
     // Test filter "wasm"
     let res_wasm = tool.execute(json!({ "filter_vm": "wasm" })).await.unwrap();
     if let ContentItem::Text { text } = &res_wasm.content[0] {
-        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert!(text.starts_with(
+            "⚠️  DEMO PLACEHOLDER — values are hardcoded, do NOT use for trading decisions."
+        ));
+        let json_part = text.split_once('\n').map(|(_, r)| r).unwrap_or(text);
+        let parsed: Value = serde_json::from_str(json_part).unwrap();
         assert_eq!(parsed["totalPools"], 1);
         assert_eq!(parsed["pools"][0]["vmType"], "wasm");
     }
@@ -75,7 +96,11 @@ async fn test_gravity_pools_tool_filtering() {
     // Test filter "riscv"
     let res_riscv = tool.execute(json!({ "filter_vm": "riscv" })).await.unwrap();
     if let ContentItem::Text { text } = &res_riscv.content[0] {
-        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert!(text.starts_with(
+            "⚠️  DEMO PLACEHOLDER — values are hardcoded, do NOT use for trading decisions."
+        ));
+        let json_part = text.split_once('\n').map(|(_, r)| r).unwrap_or(text);
+        let parsed: Value = serde_json::from_str(json_part).unwrap();
         assert_eq!(parsed["totalPools"], 1);
         assert_eq!(parsed["pools"][0]["vmType"], "riscv");
     }
@@ -85,6 +110,7 @@ async fn test_gravity_pools_tool_filtering() {
 async fn test_gravity_simulate_swap_tool() {
     let tool = create_gravity_simulate_swap_tool();
     assert_eq!(tool.name(), "gravity_simulate_swap");
+    assert!(tool.description().starts_with("[DEMO ONLY]"));
 
     let res = tool
         .execute(json!({
@@ -97,7 +123,11 @@ async fn test_gravity_simulate_swap_tool() {
 
     assert!(!res.is_error);
     if let ContentItem::Text { text } = &res.content[0] {
-        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert!(text.starts_with(
+            "⚠️  DEMO PLACEHOLDER — values are hardcoded, do NOT use for trading decisions."
+        ));
+        let json_part = text.split_once('\n').map(|(_, r)| r).unwrap_or(text);
+        let parsed: Value = serde_json::from_str(json_part).unwrap();
         assert_eq!(parsed["tokenIn"], "ETH");
         assert_eq!(parsed["tokenOut"], "GRAV");
         assert_eq!(parsed["amountIn"], 2.0);

@@ -208,7 +208,7 @@ async fn test_server_with_signed_receipts_integration() {
 
     let req = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
-        id: Some(json!(100)),
+        id: Some(intermcp::protocol::Id::Number(100)),
         method: "tools/call".to_string(),
         params: Some(json!({
             "name": "compute_sum",

@@ -9,17 +9,23 @@ fn test_smac_audit_chain_verification() {
 
     let logger = SmacLogger::new(&log_path).unwrap();
 
-    logger.record(
-        "fs_read_file",
-        &json!({"path": "src/main.rs"}),
-        &json!({"bytes": 1024}),
-    );
-    logger.record("git_status", &json!({}), &json!({"clean": true}));
-    logger.record(
-        "system_run_command",
-        &json!({"command": "cargo check"}),
-        &json!({"exitCode": 0}),
-    );
+    logger
+        .record(
+            "fs_read_file",
+            &json!({"path": "src/main.rs"}),
+            &json!({"bytes": 1024}),
+        )
+        .unwrap();
+    logger
+        .record("git_status", &json!({}), &json!({"clean": true}))
+        .unwrap();
+    logger
+        .record(
+            "system_run_command",
+            &json!({"command": "cargo check"}),
+            &json!({"exitCode": 0}),
+        )
+        .unwrap();
 
     let verified = verify_smac_log(&log_path);
     assert!(verified.is_ok());
@@ -32,8 +38,12 @@ fn test_smac_tamper_detection() {
     let log_path = temp.path().join("audit.log");
 
     let logger = SmacLogger::new(&log_path).unwrap();
-    logger.record("tool_a", &json!({"a": 1}), &json!({"res": "ok"}));
-    logger.record("tool_b", &json!({"b": 2}), &json!({"res": "ok"}));
+    logger
+        .record("tool_a", &json!({"a": 1}), &json!({"res": "ok"}))
+        .unwrap();
+    logger
+        .record("tool_b", &json!({"b": 2}), &json!({"res": "ok"}))
+        .unwrap();
 
     let original = read_to_string(&log_path).unwrap();
     let tampered = original.replace("\"tool_b\"", "\"tool_malicious\"");

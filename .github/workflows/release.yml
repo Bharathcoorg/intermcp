@@ -16,19 +16,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: intermcp
-            asset_name: intermcp-linux-x86_64.tar.gz
+            asset_name: intermcp-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: intermcp
-            asset_name: intermcp-darwin-aarch64.tar.gz
+            asset_name: intermcp-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: intermcp
-            asset_name: intermcp-darwin-x86_64.tar.gz
+            asset_name: intermcp-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: intermcp.exe
-            asset_name: intermcp-windows-x86_64.zip
+            asset_name: intermcp-${{ github.ref_name }}-x86_64-pc-windows-msvc.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -81,49 +81,6 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-npm:
-    name: Publish to npm
-    needs: publish-github-release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: 'https://registry.npmjs.org'
-      - name: Publish NPM package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm publish --access public || echo "Version already published to npm, skipping."
-          else
-            echo "NODE_AUTH_TOKEN not set, skipping npm publish"
-          fi
-
-  publish-pypi:
-    name: Publish to PyPI
-    needs: publish-github-release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Build and Publish PyPI package
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          if [ -n "$TWINE_PASSWORD" ]; then
-            cd python
-            pip install --upgrade build twine
-            python -m build
-            twine upload dist/* --non-interactive --skip-existing || echo "Version already published to PyPI, skipping."
-          else
-            echo "TWINE_PASSWORD not set, skipping PyPI publish"
-          fi
 
   publish-crates-io:
     name: Publish to Crates.io

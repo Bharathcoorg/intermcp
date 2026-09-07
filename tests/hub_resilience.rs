@@ -12,6 +12,9 @@ fn test_hub_config_serialization_and_defaults() {
             command: "node".to_string(),
             args: vec!["server.js".to_string()],
             env,
+            pass_env: vec!["DEBUG".to_string()],
+            expected_schema_hash: None,
+            expected_description_hash: None,
         }],
     };
 
@@ -23,6 +26,7 @@ fn test_hub_config_serialization_and_defaults() {
     assert_eq!(deserialized.servers[0].command, "node");
     assert_eq!(deserialized.servers[0].args, vec!["server.js"]);
     assert_eq!(deserialized.servers[0].env.get("DEBUG").unwrap(), "1");
+    assert_eq!(deserialized.servers[0].pass_env, vec!["DEBUG"]);
 }
 
 #[tokio::test]
@@ -32,6 +36,9 @@ async fn test_upstream_name_rejects_double_underscore() {
         command: "node".to_string(),
         args: vec![],
         env: HashMap::new(),
+        pass_env: vec![],
+        expected_schema_hash: None,
+        expected_description_hash: None,
     };
 
     let res = intermcp::hub::UpstreamHandle::spawn(config).await;
