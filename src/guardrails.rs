@@ -205,6 +205,19 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_non_consecutive_cycle_detection() {
+        let policy = GuardrailPolicy::new(100, 2);
+        let a = json!({"value": "a"});
+        let b = json!({"value": "b"});
+        policy.check_call("tool_a", &a).unwrap();
+        policy.check_call("tool_b", &b).unwrap();
+        policy.check_call("tool_a", &a).unwrap();
+        policy.check_call("tool_b", &b).unwrap();
+        let err = policy.check_call("tool_a", &a).unwrap_err();
+        assert!(err.to_string().contains("Repeated execution pattern detected"));
+    }
+
+    #[test]
     fn test_normalized_arguments_hash_ignores_whitespace_and_case() {
         let args1 = json!({
             "command": "  GIT PUSH origin main  ",
