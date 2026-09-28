@@ -1,7 +1,6 @@
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,11 +47,8 @@ pub struct TimeLockedVault {
     _cleanup_guard: Arc<CleanupGuard>,
 }
 
-fn hash_arguments(arguments: &Value) -> String {
-    let canonical = serde_json::to_vec(arguments).unwrap_or_default();
-    let mut hasher = Sha256::new();
-    hasher.update(canonical);
-    format!("{:x}", hasher.finalize())
+fn hash_arguments(arguments: &Value) -> Result<String, FastMcpError> {
+    crate::receipts::hash_canonical_json(arguments)
 }
 
 fn safe_display_arguments(value: &Value) -> Value {
@@ -146,7 +142,7 @@ impl TimeLockedVault {
                 PendingEntry {
                     tool: tool_name.to_string(),
                     arguments: safe_display_arguments(arguments),
-                    argument_hash: hash_arguments(arguments),
+                    argument_hash: hash_arguments(arguments)?,
                     expires_at,
                     sender: tx,
                 },
@@ -277,7 +273,7 @@ mod tests {
                     PendingEntry {
                         tool: "high_risk".to_string(),
                         arguments: serde_json::json!({}),
-                        argument_hash: hash_arguments(&serde_json::json!({})),
+                        argument_hash: hash_arguments(&serde_json::json!({})).unwrap(),
                         expires_at: Instant::now() + Duration::from_secs(60),
                         sender: tx,
                     },
@@ -297,6 +293,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_vault_hash_uses_canonical_json() {
+        let a = serde_json::json!({"b": 2, "a": 1});
+        let b = serde_json::json!({"a": 1, "b": 2});
+        assert_eq!(hash_arguments(&a).unwrap(), hash_arguments(&b).unwrap());
+    }
+
     #[tokio::test]
     async fn test_vault_expired_entry_cleaned_up() {
         let vault = TimeLockedVault::new(vec!["high_risk".into()], 30);
@@ -308,7 +311,7 @@ mod tests {
                 PendingEntry {
                     tool: "high_risk".to_string(),
                     arguments: serde_json::json!({}),
-                    argument_hash: hash_arguments(&serde_json::json!({})),
+                    argument_hash: hash_arguments(&serde_json::json!({})).unwrap(),
                     expires_at: Instant::now() - Duration::from_secs(5),
                     sender: tx,
                 },
