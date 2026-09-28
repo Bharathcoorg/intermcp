@@ -151,6 +151,20 @@ class Client
         return $this->request('resources/read', ['uri' => $uri]);
     }
 
+    public function listPrompts(): array
+    {
+        $res = $this->request('prompts/list');
+        return $res['prompts'] ?? [];
+    }
+
+    public function getPrompt(string $name, array $arguments = []): array
+    {
+        return $this->request('prompts/get', [
+            'name' => $name,
+            'arguments' => (object)$arguments,
+        ]);
+    }
+
     public function close(): void
     {
         if (isset($this->pipes[0]) && is_resource($this->pipes[0])) {
