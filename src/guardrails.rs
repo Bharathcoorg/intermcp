@@ -11,6 +11,7 @@ pub struct GuardrailPolicy {
     char_history: RwLock<VecDeque<(Instant, usize)>>,
     history: RwLock<HashMap<String, Vec<Instant>>>,
     last_signature: RwLock<Option<(String, u32)>>,
+    recent_signatures: RwLock<VecDeque<String>>,
     prune_counter: AtomicU64,
 }
 
@@ -23,6 +24,7 @@ impl GuardrailPolicy {
             char_history: RwLock::new(VecDeque::new()),
             history: RwLock::new(HashMap::new()),
             last_signature: RwLock::new(None),
+            recent_signatures: RwLock::new(VecDeque::with_capacity(64)),
             prune_counter: AtomicU64::new(0),
         }
     }
@@ -127,19 +129,38 @@ impl GuardrailPolicy {
             )));
         }
 
-        *last = Some((signature, consecutive_count));
+        *last = Some((signature.clone(), consecutive_count));
+
+        // Detect non-consecutive repetition/cycles within a bounded session window.
+        // This catches patterns such as A -> B -> A -> B that the consecutive
+        // signature detector cannot see while keeping memory bounded.
+        const RECENT_WINDOW: usize = 64;
+        let mut recent = self.recent_signatures.write();
+        recent.push_back(signature.clone());
+        while recent.len() > RECENT_WINDOW {
+            recent.pop_front();
+        }
+        let repeated_count = recent.iter().filter(|item| *item == &signature).count();
+        if repeated_count > self.loop_detection_threshold as usize {
+            return Err(FastMcpError::ToolExecution(format!(
+                "InterMCP Loop Breaker: Repeated execution pattern detected! Tool '{}' was invoked {} times within the recent session window. Execution halted.",
+                tool_name, repeated_count
+            )));
+        }
 
         Ok(())
     }
 
     pub fn reset_signature(&self, _tool_name: &str, _arguments: &serde_json::Value) {
         *self.last_signature.write() = None;
+        self.recent_signatures.write().clear();
     }
 
     pub fn reset(&self) {
         self.history.write().clear();
         self.char_history.write().clear();
         *self.last_signature.write() = None;
+        self.recent_signatures.write().clear();
     }
 }
 
