@@ -51,6 +51,72 @@ fn default_rate_limit() -> u32 {
     120
 }
 
+fn glob_like_match(value: &str, pattern: &str) -> bool {
+    // Small dependency-free glob matcher for policy paths. Supports '*' within a
+    // component and '**' across path separators. Matching is case-insensitive.
+    let value = value.to_ascii_lowercase().replace('\\', "/");
+    let pattern = pattern.to_ascii_lowercase().replace('\\', "/");
+    if pattern == "**" || pattern == "*" {
+        return true;
+    }
+
+    fn component_match(value: &[u8], pattern: &[u8]) -> bool {
+        let mut v = 0usize;
+        let mut p = 0usize;
+        let mut star = None;
+        let mut mark = 0usize;
+        while v < value.len() {
+            if p < pattern.len() && pattern[p] == value[v] {
+                v += 1;
+                p += 1;
+            } else if p < pattern.len() && pattern[p] == b'*' {
+                star = Some(p);
+                p += 1;
+                mark = v;
+            } else if let Some(star_pos) = star {
+                p = star_pos + 1;
+                mark += 1;
+                v = mark;
+            } else {
+                return false;
+            }
+        }
+        while p < pattern.len() && pattern[p] == b'*' {
+            p += 1;
+        }
+        p == pattern.len()
+    }
+
+    let values: Vec<&str> = value.split('/').collect();
+    let patterns: Vec<&str> = pattern.split('/').collect();
+    let mut vi = 0usize;
+    let mut pi = 0usize;
+    let mut globstar = None;
+
+    while vi < values.len() {
+        if pi < patterns.len() && patterns[pi] == "**" {
+            globstar = Some(pi);
+            pi += 1;
+            if pi == patterns.len() {
+                return true;
+            }
+        } else if pi < patterns.len() && component_match(values[vi].as_bytes(), patterns[pi].as_bytes()) {
+            vi += 1;
+            pi += 1;
+        } else if let Some(gs) = globstar {
+            pi = gs + 1;
+            vi += 1;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < patterns.len() && patterns[pi] == "**" {
+        pi += 1;
+    }
+    pi == patterns.len()
+}
+
 fn default_output_limit() -> usize {
     2 * 1024 * 1024 // 2 MB
 }
@@ -140,6 +206,12 @@ impl PolicyEngine {
 
     /// Evaluate filesystem read/write operation against path rules
     pub fn check_filesystem(&self, path: &Path, is_write: bool) -> Result<(), PolicyViolation> {
+        if path.to_string_lossy().contains("\\0") {
+            self.record_violation();
+            if self.policy.mode == PolicyMode::Enforcing {
+                return Err(PolicyViolation::FilesystemDenied("Path contains an embedded NUL byte".into()));
+            }
+        }
         let raw_str = path.to_string_lossy().to_lowercase().replace('\\', "/");
         let canonical_or_normalized = dunce::canonicalize(path).unwrap_or_else(|_| {
             let mut normalized = std::path::PathBuf::new();
@@ -163,9 +235,11 @@ impl PolicyEngine {
         for pattern in &self.policy.filesystem.denied {
             let p_norm = pattern.to_lowercase().replace('\\', "/");
             let p_trimmed = p_norm.trim_end_matches('/');
-            if raw_str.contains(&p_norm)
-                || raw_str.ends_with(p_trimmed)
+            if glob_like_match(&raw_str, &p_norm)
+                || glob_like_match(&norm_str, &p_norm)
+                || raw_str.contains(&p_norm)
                 || norm_str.contains(&p_norm)
+                || raw_str.ends_with(p_trimmed)
                 || norm_str.ends_with(p_trimmed)
             {
                 self.record_violation();
