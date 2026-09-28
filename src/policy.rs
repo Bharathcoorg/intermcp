@@ -206,7 +206,7 @@ impl PolicyEngine {
 
     /// Evaluate filesystem read/write operation against path rules
     pub fn check_filesystem(&self, path: &Path, is_write: bool) -> Result<(), PolicyViolation> {
-        if path.to_string_lossy().contains("\\0") {
+        if path.to_string_lossy().contains("\0") {
             self.record_violation();
             if self.policy.mode == PolicyMode::Enforcing {
                 return Err(PolicyViolation::FilesystemDenied("Path contains an embedded NUL byte".into()));
