@@ -246,6 +246,24 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (*CallResult
 }
 
 // Close gracefully terminates the InterMCP subprocess
+    // ListPrompts returns all registered MCP prompts
+    func (c *Client) ListPrompts() ([]map[string]interface{}, error) {
+        raw, err := c.Request("prompts/list", map[string]interface{}{})
+        if err != nil { return nil, err }
+        var res struct { Prompts []map[string]interface{} `json:"prompts"` }
+        if err := json.Unmarshal(raw, &res); err != nil { return nil, err }
+        return res.Prompts, nil
+    }
+
+    // GetPrompt retrieves a registered MCP prompt.
+    func (c *Client) GetPrompt(name string, args map[string]interface{}) (map[string]interface{}, error) {
+        raw, err := c.Request("prompts/get", map[string]interface{}{"name": name, "arguments": args})
+        if err != nil { return nil, err }
+        var res map[string]interface{}
+        if err := json.Unmarshal(raw, &res); err != nil { return nil, err }
+        return res, nil
+    }
+
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
