@@ -1,6 +1,7 @@
 package intermcp
 
 import (
+	"time"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -161,15 +162,35 @@ func (c *Client) sendRequestLocked(method string, params interface{}) (json.RawM
 		return nil, fmt.Errorf("failed to write to intermcp: %w", err)
 	}
 
-	if !c.scanner.Scan() {
-		if err := c.scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read error: %w", err)
+	type scanResult struct {
+		line string
+		err  error
+	}
+	resultCh := make(chan scanResult, 1)
+	go func() {
+		if c.scanner.Scan() {
+			resultCh <- scanResult{line: c.scanner.Text()}
+			return
 		}
+		resultCh <- scanResult{err: c.scanner.Err()}
+	}()
+
+	var result scanResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(30 * time.Second):
+		_ = c.Close()
+		return nil, fmt.Errorf("intermcp request timeout after 30 seconds")
+	}
+	if result.err != nil {
+		return nil, fmt.Errorf("read error: %w", result.err)
+	}
+	if result.line == "" {
 		return nil, fmt.Errorf("intermcp process closed output pipe unexpectedly")
 	}
 
 	var resp jsonRpcResponse
-	if err := json.Unmarshal(c.scanner.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal([]byte(result.line), &resp); err != nil {
 		return nil, fmt.Errorf("invalid json-rpc response: %w", err)
 	}
 
