@@ -67,13 +67,13 @@ impl From<Id> for Value { fn from(id: Id) -> Self { id.to_value() } }
 impl From<&Id> for Value { fn from(id: &Id) -> Self { id.to_value() } }
 impl From<i64> for Id { fn from(n: i64) -> Self { Id::Number(n) } }
 impl From<i32> for Id { fn from(n: i32) -> Self { Id::Number(n as i64) } }
-impl From<u64> for Id { fn from(n: u64) -> Self { Id::Number(n as i64) } }
+impl From<u64> for Id { fn from(n: u64) -> Self { if n <= i64::MAX as u64 { Id::Number(n as i64) } else { Id::String(n.to_string()) } } }
 impl From<String> for Id { fn from(s: String) -> Self { Id::String(s) } }
 impl From<&str> for Id { fn from(s: &str) -> Self { Id::String(s.to_string()) } }
 impl From<Value> for Id {
     fn from(v: Value) -> Self {
         match v {
-            Value::Number(n) => if let Some(i)=n.as_i64(){Id::Number(i)} else if let Some(u)=n.as_u64(){Id::Number(u as i64)} else {Id::String(n.to_string())},
+            Value::Number(n) => if let Some(i)=n.as_i64(){Id::Number(i)} else if let Some(u)=n.as_u64(){ Id::from(u) } else {Id::String(n.to_string())},
             Value::String(s) => Id::String(s),
             _ => Id::Null,
         }
