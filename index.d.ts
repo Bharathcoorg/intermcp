@@ -1,5 +1,6 @@
 export interface InterMcpClientOptions {
   plugin?: string | null;
+  binaryPath?: string | null;
 }
 
 export interface ToolDefinition {
