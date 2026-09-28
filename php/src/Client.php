@@ -65,6 +65,10 @@ class Client
             throw new RuntimeException("Failed to spawn InterMCP process: {$this->binaryPath}");
         }
 
+        // Bound blocking reads so a dead native process cannot hang the host application forever.
+        stream_set_timeout($this->pipes[1], 30);
+        stream_set_timeout($this->pipes[2], 30);
+
         // Complete MCP 2024-11-05 Handshake
         $initParams = [
             'protocolVersion' => '2024-11-05',
@@ -104,7 +108,11 @@ class Client
             }
         }
         if ($line === '') {
+            $meta = stream_get_meta_data($this->pipes[1]);
             $err = stream_get_contents($this->pipes[2]) ?: 'Unknown termination';
+            if (!empty($meta['timed_out'])) {
+                throw new RuntimeException("InterMCP request timeout after 30 seconds: {$this->requestId}");
+            }
             throw new RuntimeException("InterMCP engine exited unexpectedly: {$err}");
         }
 
