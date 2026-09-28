@@ -45,8 +45,9 @@ pub use policy::{
 pub use prompt::{Prompt, SimplePrompt};
 pub use protocol::{CallToolResult, ContentItem, JsonRpcRequest, JsonRpcResponse, ToolDefinition};
 pub use receipts::{
-    canonicalize_json, hash_canonical_json, verify_receipt_chain_file, ExecutionReceipt,
-    ReceiptBook, ReceiptStatus, SignedReceiptRecord, VerificationSummary,
+    canonicalize_json, hash_canonical_json, verify_receipt_chain_file, verify_receipt_checkpoint,
+    ExecutionReceipt, ReceiptBook, ReceiptCheckpoint, ReceiptStatus, SignedReceiptRecord,
+    VerificationSummary,
 };
 pub use record::{FrameDirection, ReplaySummary, SessionFrame, SessionRecorder, SessionReplayer};
 pub use resource::{Resource, SimpleResource};
