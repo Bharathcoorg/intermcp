@@ -12,7 +12,7 @@ Each layer has a distinct responsibility:
 
 - Protocol validates JSON-RPC framing, method parameters, and negotiated MCP version.
 - Policy decides whether a requested operation is permitted by configured rules.
-- Guardrails limit repeated calls, resource consumption, and runaway agent behavior.
+- Guardrails limit repeated calls, bounded recent-pattern repetition/cycles, resource consumption, and runaway agent behavior.
 - Taint tracks structured provenance/confidentiality labels and blocks unsafe flows to privileged sinks.
 - Approval vault introduces an explicit human decision for configured high-risk actions.
 - Tool sandbox applies the concrete filesystem/process/network restrictions of the operation.
@@ -72,7 +72,7 @@ All language SDKs should converge on the same lifecycle and semantics:
 startup,
 initialize/version negotiation, request timeouts, process failure handling,
 tool/resource/prompt operations, cancellation where supported, and deterministic
-shutdown.
+shutdown. The bundled Node, Python, Go, and PHP clients now expose the same core tool/resource/prompt lifecycle and bound blocking stdio response reads.
 
 ## Release discipline
 
