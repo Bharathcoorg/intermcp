@@ -270,6 +270,38 @@ pub struct VerificationSummary {
     pub signatures_verified: bool,
 }
 
+/// Out-of-band checkpoint for detecting receipt-chain tail truncation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReceiptCheckpoint {
+    pub sequence: u64,
+    pub last_receipt_hash: String,
+    pub signer_id: String,
+}
+
+impl ReceiptCheckpoint {
+    pub fn from_summary(summary: &VerificationSummary, signer_id: impl Into<String>) -> Self {
+        Self {
+            sequence: summary.count as u64,
+            last_receipt_hash: summary.last_hash.clone(),
+            signer_id: signer_id.into(),
+        }
+    }
+}
+
+/// Verify that a local receipt chain reaches an externally stored checkpoint.
+pub fn verify_receipt_checkpoint(
+    summary: &VerificationSummary,
+    checkpoint: &ReceiptCheckpoint,
+) -> Result<(), FastMcpError> {
+    if summary.count as u64 != checkpoint.sequence || summary.last_hash != checkpoint.last_receipt_hash {
+        return Err(FastMcpError::SecurityViolation(format!(
+            "Receipt chain does not reach checkpoint sequence #{} ({})",
+            checkpoint.sequence, checkpoint.last_receipt_hash
+        )));
+    }
+    Ok(())
+}
+
 /// Verify an entire chain of signed receipts from a file.
 pub fn verify_receipt_chain_file(
     path: &Path,
