@@ -420,3 +420,32 @@ impl PolicyEngine {
         self.violations_count.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn embedded_nul_path_is_rejected() {
+        let policy = PolicyEngine::new(DeclarativePolicy::default());
+        let path = Path::new("safe /evil");
+        assert!(matches!(
+            policy.check_filesystem(path, false),
+            Err(PolicyViolation::FilesystemDenied(_))
+        ));
+    }
+
+    #[test]
+    fn wildcard_denied_paths_match_nested_files() {
+        let policy = PolicyEngine::new(DeclarativePolicy {
+            filesystem: FilesystemPolicy {
+                denied: vec!["/workspace/**/*.pem".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(policy.check_filesystem(Path::new("/workspace/a/b/c.pem"), false).is_err());
+    }
+}
