@@ -510,16 +510,18 @@ impl Server {
                     .and_then(|p| p.get("protocolVersion"))
                     .and_then(|v| v.as_str());
 
-                const KNOWN_PROTOCOLS: &[&str] = &["2024-11-05", "2024-10-07", "0.1.0"];
-
-                let negotiated_version = match client_proto_version {
-                    Some(v)
-                        if crate::protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&v)
-                            || KNOWN_PROTOCOLS.contains(&v) =>
-                    {
-                        v.to_string()
+                let negotiated_version = match crate::protocol::negotiate_protocol_version(client_proto_version) {
+                    Ok(version) => version,
+                    Err(error) => {
+                        return Some(JsonRpcResponse::error(
+                            req_id,
+                            -32602,
+                            error.to_string(),
+                            Some(json!({
+                                "supportedProtocolVersions": crate::protocol::SUPPORTED_PROTOCOL_VERSIONS,
+                            })),
+                        ));
                     }
-                    _ => LATEST_PROTOCOL_VERSION.to_string(),
                 };
 
                 let result = InitializeResult {
