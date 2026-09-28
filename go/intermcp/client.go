@@ -179,7 +179,9 @@ func (c *Client) sendRequestLocked(method string, params interface{}) (json.RawM
 	select {
 	case result = <-resultCh:
 	case <-time.After(30 * time.Second):
-		_ = c.Close()
+		if c.cmd != nil && c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
 		return nil, fmt.Errorf("intermcp request timeout after 30 seconds")
 	}
 	if result.err != nil {
