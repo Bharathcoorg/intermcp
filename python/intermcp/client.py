@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import threading
+import queue
 from typing import Any, Dict, List, Optional
 
 
@@ -74,7 +75,25 @@ class InterMcpClient:
             self.proc.stdin.write(msg)
             self.proc.stdin.flush()
 
-            line = self.proc.stdout.readline()
+            response_queue: "queue.Queue[object]" = queue.Queue(maxsize=1)
+
+            def read_response() -> None:
+                try:
+                    response_queue.put(self.proc.stdout.readline())
+                except Exception as exc:
+                    response_queue.put(exc)
+
+            reader = threading.Thread(target=read_response, daemon=True)
+            reader.start()
+            try:
+                line = response_queue.get(timeout=30)
+            except queue.Empty:
+                self.close()
+                raise RuntimeError(f"InterMCP request timeout after 30 seconds: {method}")
+
+            if isinstance(line, Exception):
+                self.close()
+                raise RuntimeError(f"InterMCP response read failed: {line}")
             if not line:
                 err = self.proc.stderr.read() if self.proc.stderr else "Unknown error"
                 raise RuntimeError(f"InterMCP engine process exited: {err}")
